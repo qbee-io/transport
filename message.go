@@ -22,12 +22,24 @@ import (
 	"io"
 )
 
+// MessageType defines the type of message sent over the wire.
 type MessageType uint8
 
 const (
+	// MessageTypeOK indicates that requested operation was successful.
+	// The payload is empty.
 	MessageTypeOK MessageType = iota
+
+	// MessageTypeError indicates that requested operation failed.
+	// The payload contains the error message.
 	MessageTypeError
+
+	// MessageTypeTCPTunnel indicates that the message is a TCP tunnel request.
+	// The payload contains the remote host and port.
 	MessageTypeTCPTunnel
+
+	// MessageTypeUDPTunnel indicates that the message is a UDP tunnel request.
+	// The payload contains the suggested listener port, remote host and port.
 	MessageTypeUDPTunnel
 )
 

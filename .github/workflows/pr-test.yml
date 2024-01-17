@@ -16,6 +16,9 @@ jobs:
         with:
           go-version: 1.21.6
 
+      - name: go test
+        run: go test ./...
+
       - id: govulncheck
         uses: golang/govulncheck-action@v1
         with:

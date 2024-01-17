@@ -19,7 +19,9 @@ package transport
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net"
@@ -192,7 +194,7 @@ func handleStream(ctx context.Context, stream *smux.Stream) {
 		err = fmt.Errorf("unsupported message type: %v", messageType)
 	}
 
-	if err != nil {
+	if err != nil && !errors.Is(err, io.EOF) {
 		log.Printf("stream processing failed: %v", err)
 	}
 }

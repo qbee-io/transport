@@ -17,10 +17,10 @@
 package transport
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -98,6 +98,10 @@ func UpgradeHandler(w http.ResponseWriter, r *http.Request) (*smux.Session, erro
 	return smux.Server(netConn, DefaultSmuxConfig)
 }
 
+var dialer = net.Dialer{
+	Timeout: 30 * time.Second,
+}
+
 // ClientConnect initiates smux session with the provided edge endpoint.
 func ClientConnect(ctx context.Context, endpointURL, authHeader string, tlsConfig *tls.Config) (*smux.Session, error) {
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, endpointURL, nil)
@@ -112,56 +116,31 @@ func ClientConnect(ctx context.Context, endpointURL, authHeader string, tlsConfi
 	httpRequest.Header.Set("Connection", "upgrade")
 	httpRequest.Header.Set("Upgrade", Protocol)
 
-	hostPort := httpRequest.URL.Host
-	if httpRequest.URL.Port() == "" {
-		hostPort += ":443"
-	}
-
-	var netConn net.Conn
-	netConn, err = deviceClientNetDialer.DialContext(ctx, "tcp", hostPort)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial: %w", err)
-	}
-
-	// make sure that the localListener is closed if any errors occur during the rest of the initialization process
-	onErrorClose := netConn.Close
-	defer func() {
-		if onErrorClose != nil {
-			_ = onErrorClose()
-		}
-	}()
-
-	tlsConn := tls.Client(netConn, tlsConfig)
-	netConn = tlsConn
-	onErrorClose = netConn.Close
-
-	if err = tlsConn.HandshakeContext(ctx); err != nil {
-		return nil, fmt.Errorf("failed to handshake: %w", err)
-	}
-
-	if err = tlsConn.VerifyHostname(tlsConfig.ServerName); err != nil {
-		return nil, fmt.Errorf("failed to verify hostname: %w", err)
-	}
-
-	if err = httpRequest.Write(netConn); err != nil {
-		return nil, fmt.Errorf("failed to write request: %w", err)
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			DialContext:         dialer.DialContext,
+			DisableKeepAlives:   true,
+			TLSHandshakeTimeout: 10 * time.Second,
+			TLSClientConfig:     tlsConfig,
+		},
 	}
 
 	var httpResponse *http.Response
-	if httpResponse, err = http.ReadResponse(bufio.NewReaderSize(netConn, 4096), httpRequest); err != nil {
+	if httpResponse, err = httpClient.Do(httpRequest); err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if httpResponse.StatusCode != http.StatusSwitchingProtocols {
+		_ = httpResponse.Body.Close()
 		return nil, fmt.Errorf("failed to upgrade, got %d", httpResponse.StatusCode)
 	}
 
 	var smuxSession *smux.Session
-	if smuxSession, err = smux.Client(netConn, DefaultSmuxConfig); err != nil {
+	if smuxSession, err = smux.Client(httpResponse.Body.(io.ReadWriteCloser), DefaultSmuxConfig); err != nil {
+		_ = httpResponse.Body.Close()
 		return nil, fmt.Errorf("failed to create smux session: %w", err)
 	}
-
-	onErrorClose = nil
 
 	return smuxSession, nil
 }

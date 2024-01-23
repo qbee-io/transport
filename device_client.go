@@ -32,9 +32,8 @@ import (
 	"github.com/xtaci/smux"
 )
 
-var deviceClientNetDialer = &net.Dialer{
-	Timeout: 10 * time.Second,
-}
+// Handler is a function that handles a stream on the device client.
+type Handler func(ctx context.Context, stream *smux.Stream, payload []byte) error
 
 // NewDeviceClient creates a new DeviceClient.
 // endpoint is the address of the remote access device registration endpoint (e.g. "https://edge.example.com/device").
@@ -53,6 +52,7 @@ func NewDeviceClient(endpoint string, tlsConfig *tls.Config) (*DeviceClient, err
 		endpoint:   endpoint,
 		tlsConfig:  tlsConfig,
 		smuxConfig: DefaultSmuxConfig,
+		handlers:   make(map[MessageType]Handler),
 	}
 
 	return cli, nil
@@ -67,6 +67,13 @@ type DeviceClient struct {
 	cancelCtx  context.CancelFunc
 	err        error
 	ready      sync.WaitGroup
+	handlers   map[MessageType]Handler
+}
+
+// WithHandler sets the handler for the given message type.
+func (cli *DeviceClient) WithHandler(messageType MessageType, handler Handler) *DeviceClient {
+	cli.handlers[messageType] = handler
+	return cli
 }
 
 // WithSmuxConfig sets the smux config for the device client.
@@ -97,7 +104,7 @@ func (cli *DeviceClient) startOnce(ctx context.Context) error {
 				return err
 			}
 
-			go handleStream(ctx, stream)
+			go cli.handleStream(ctx, stream)
 		}
 	}
 }
@@ -175,7 +182,7 @@ func (cli *DeviceClient) Close() error {
 var deviceDialer = net.Dialer{}
 
 // handleStream handles a new stream and log any errors.
-func handleStream(ctx context.Context, stream *smux.Stream) {
+func (cli *DeviceClient) handleStream(ctx context.Context, stream *smux.Stream) {
 	// ensure the stream is always closed
 	defer stream.Close()
 
@@ -183,18 +190,16 @@ func handleStream(ctx context.Context, stream *smux.Stream) {
 	messageType, payload, err := ReadMessage(stream)
 	if err != nil {
 		log.Printf("failed to read message: %v", err)
+		return
 	}
 
-	switch messageType {
-	case MessageTypeTCPTunnel:
-		err = HandleTCPTunnel(ctx, stream, string(payload))
-	case MessageTypeUDPTunnel:
-		err = HandleUDPTunnel(ctx, stream, string(payload))
-	default:
-		err = fmt.Errorf("unsupported message type: %v", messageType)
+	handler, ok := cli.handlers[messageType]
+	if !ok {
+		log.Printf("unsupported handler: %v", messageType)
+		return
 	}
 
-	if err != nil && !errors.Is(err, io.EOF) {
+	if err = handler(ctx, stream, payload); err != nil && !errors.Is(err, io.EOF) {
 		log.Printf("stream processing failed: %v", err)
 	}
 }

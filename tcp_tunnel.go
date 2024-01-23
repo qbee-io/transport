@@ -18,7 +18,6 @@ package transport
 
 import (
 	"context"
-	"io"
 	"net"
 
 	"github.com/xtaci/smux"
@@ -26,7 +25,7 @@ import (
 
 // NewTCPTunnel tunnels local TCP connection through smux stream to the given remote host and port.
 func NewTCPTunnel(ctx context.Context, conn *net.TCPConn, session *smux.Session, remoteHostPort string) error {
-	stream, err := initTunnelStream(ctx, session, MessageTypeTCPTunnel, remoteHostPort)
+	stream, err := OpenStream(ctx, session, MessageTypeTCPTunnel, []byte(remoteHostPort))
 	if err != nil {
 		return err
 	}
@@ -38,8 +37,8 @@ func NewTCPTunnel(ctx context.Context, conn *net.TCPConn, session *smux.Session,
 }
 
 // HandleTCPTunnel handles a TCP tunnel request as a device.
-func HandleTCPTunnel(ctx context.Context, stream io.ReadWriteCloser, remoteAddr string) error {
-	tcpConn, err := deviceDialer.DialContext(ctx, "tcp", remoteAddr)
+func HandleTCPTunnel(ctx context.Context, stream *smux.Stream, remoteAddr []byte) error {
+	tcpConn, err := deviceDialer.DialContext(ctx, "tcp", string(remoteAddr))
 	if err != nil {
 		_ = WriteMessage(stream, MessageTypeError, []byte(err.Error()))
 		return err

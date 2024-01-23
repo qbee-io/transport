@@ -25,7 +25,7 @@ import (
 )
 
 func Test_UDPTunnel(t *testing.T) {
-	testConnTTL := 5 * time.Minute
+	testConnTTL := 5 * time.Second
 	// start two tests targets, we want to simulate TFTP scenario,
 	// where initial request is sent to a known service port,
 	// but the actual data transfer is done via a random port.
@@ -111,7 +111,8 @@ func Test_UDPTunnel(t *testing.T) {
 		t.Log("dev: done")
 	}(t)
 
-	client, _, _ := NewEdgeMock(t)
+	client, deviceClient, _ := NewEdgeMock(t)
+	deviceClient.WithHandler(MessageTypeUDPTunnel, HandleUDPTunnel)
 
 	localHostPort := "127.0.0.1:2001"
 

@@ -41,6 +41,14 @@ const (
 	// MessageTypeUDPTunnel indicates that the message is a UDP tunnel request.
 	// The payload contains the suggested listener port, remote host and port.
 	MessageTypeUDPTunnel
+
+	// MessageTypePTY indicates that the message is a PTY request.
+	// The payload contains initial JSON-encoded PTYCommand with PTYCommandTypeResize to set the initial window size.
+	MessageTypePTY
+
+	// MessageTypePTYCommand indicates that the message is a PTY command request.
+	// The payload contains JSON-encoded PTYCommand.
+	MessageTypePTYCommand
 )
 
 // Message wire format:

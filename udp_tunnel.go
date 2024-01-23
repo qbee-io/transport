@@ -367,7 +367,7 @@ func (t *UDPTunnel) getOrCreateStream(cliAddr *net.UDPAddr, listener *net.UDPCon
 	// The device will attempt to use it, but if it fails, it will use a random port
 	payload := fmt.Sprintf("%d:%s", cliAddr.Port, t.remoteHostPort)
 
-	stream, err := initTunnelStream(t.ctx, t.session, MessageTypeUDPTunnel, payload)
+	stream, err := OpenStream(t.ctx, t.session, MessageTypeUDPTunnel, []byte(payload))
 	if err != nil {
 		return nil, fmt.Errorf("error opening stream: %v", err)
 	}
@@ -538,8 +538,8 @@ func handleUDPTunnelRx(ctx context.Context, stream *smux.Stream, udpListener *ne
 }
 
 // HandleUDPTunnel handles a UDP tunnel stream as a device.
-func HandleUDPTunnel(ctx context.Context, stream *smux.Stream, payload string) error {
-	payloadParts := strings.SplitN(payload, ":", 2)
+func HandleUDPTunnel(ctx context.Context, stream *smux.Stream, payload []byte) error {
+	payloadParts := strings.SplitN(string(payload), ":", 2)
 	if len(payloadParts) != 2 {
 		err := fmt.Errorf("invalid payload")
 		_ = WriteMessage(stream, MessageTypeError, []byte(err.Error()))

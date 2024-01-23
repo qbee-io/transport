@@ -37,7 +37,8 @@ func Test_TCPTunnel(t *testing.T) {
 	}))
 
 	// set up a mock edge infrastructure
-	client, _, _ := NewEdgeMock(t)
+	client, deviceClient, _ := NewEdgeMock(t)
+	deviceClient.WithHandler(MessageTypeTCPTunnel, HandleTCPTunnel)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

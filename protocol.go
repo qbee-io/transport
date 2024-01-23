@@ -144,3 +144,37 @@ func ClientConnect(ctx context.Context, endpointURL, authHeader string, tlsConfi
 
 	return smuxSession, nil
 }
+
+// OpenStream opens a new stream and sends the given message type and payload.
+func OpenStream(ctx context.Context, session *smux.Session, msgType MessageType, payload []byte) (*smux.Stream, error) {
+	ioWaitTimeoutDuration := getIOWaitTimeout(ctx)
+
+	_ = session.SetDeadline(time.Now().Add(ioWaitTimeoutDuration))
+
+	stream, err := session.OpenStream()
+	if err != nil {
+		return nil, fmt.Errorf("error opening stream: %v", err)
+	}
+
+	if err = WriteMessage(stream, msgType, payload); err != nil {
+		_ = stream.Close()
+		return nil, err
+	}
+
+	if msgType, payload, err = ReadMessage(stream); err != nil {
+		_ = stream.Close()
+		return nil, fmt.Errorf("error reading message: %v", err)
+	}
+
+	if msgType == MessageTypeError {
+		_ = stream.Close()
+		return nil, fmt.Errorf("error opening tunnel: %s", string(payload))
+	}
+
+	if msgType != MessageTypeOK {
+		_ = stream.Close()
+		return nil, fmt.Errorf("got unexpected init response: %d", msgType)
+	}
+
+	return stream, nil
+}

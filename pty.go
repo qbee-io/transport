@@ -1,5 +1,6 @@
 package transport
 
+// PTYCommandType is the type of PTY command.
 type PTYCommandType uint8
 
 const (

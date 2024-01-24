@@ -296,9 +296,6 @@ type UDPTunnel struct {
 	// It's used to create new streams for new clients.
 	session *smux.Session
 
-	// writeLock controls concurrent write access to the stream
-	writeLock sync.Mutex
-
 	// streams is a map of client address (host:port) to streams.
 	// We use a separate stream for each client to provide isolation.
 	streams map[string]*UDPStream

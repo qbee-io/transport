@@ -79,7 +79,7 @@ func Test_UDPTunnel(t *testing.T) {
 		}
 
 		t.Log("dev: reading ack from secondary port", remoteSecondaryListener.LocalAddr().String())
-		if _, addr, goErr = remoteSecondaryListener.ReadFromUDP(buf); goErr != nil {
+		if _, _, goErr = remoteSecondaryListener.ReadFromUDP(buf); goErr != nil {
 			t.Error(goErr)
 			return
 		}

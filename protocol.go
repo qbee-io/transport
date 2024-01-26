@@ -161,19 +161,9 @@ func OpenStream(ctx context.Context, session *smux.Session, msgType MessageType,
 		return nil, err
 	}
 
-	if msgType, payload, err = ReadMessage(stream); err != nil {
+	if _, err = ExpectOK(stream); err != nil {
 		_ = stream.Close()
 		return nil, fmt.Errorf("error reading message: %v", err)
-	}
-
-	if msgType == MessageTypeError {
-		_ = stream.Close()
-		return nil, fmt.Errorf("error opening tunnel: %s", string(payload))
-	}
-
-	if msgType != MessageTypeOK {
-		_ = stream.Close()
-		return nil, fmt.Errorf("got unexpected init response: %d", msgType)
 	}
 
 	return stream, nil

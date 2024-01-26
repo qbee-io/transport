@@ -540,27 +540,23 @@ func handleUDPTunnelRx(ctx context.Context, stream *smux.Stream, udpListener *ne
 func HandleUDPTunnel(ctx context.Context, stream *smux.Stream, payload []byte) error {
 	payloadParts := strings.SplitN(string(payload), ":", 2)
 	if len(payloadParts) != 2 {
-		err := fmt.Errorf("invalid payload")
-		_ = WriteMessage(stream, MessageTypeError, []byte(err.Error()))
-		return err
+		return WriteError(stream, fmt.Errorf("invalid payload"))
 	}
 
 	suggestedSrcPort, remoteAddr := payloadParts[0], payloadParts[1]
 
 	dstAddr, err := net.ResolveUDPAddr("udp", remoteAddr)
 	if err != nil {
-		_ = WriteMessage(stream, MessageTypeError, []byte(err.Error()))
-		return err
+		return WriteError(stream, err)
 	}
 
 	var udpListener *net.UDPConn
 	if udpListener, err = newDeviceUDPListener(dstAddr, suggestedSrcPort); err != nil {
-		_ = WriteMessage(stream, MessageTypeError, []byte(err.Error()))
-		return err
+		return WriteError(stream, err)
 	}
 	defer udpListener.Close()
 
-	if err = WriteMessage(stream, MessageTypeOK, nil); err != nil {
+	if err = WriteOK(stream, nil); err != nil {
 		return err
 	}
 

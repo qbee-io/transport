@@ -40,12 +40,11 @@ func NewTCPTunnel(ctx context.Context, conn *net.TCPConn, session *smux.Session,
 func HandleTCPTunnel(ctx context.Context, stream *smux.Stream, remoteAddr []byte) error {
 	tcpConn, err := deviceDialer.DialContext(ctx, "tcp", string(remoteAddr))
 	if err != nil {
-		_ = WriteMessage(stream, MessageTypeError, []byte(err.Error()))
-		return err
+		return WriteError(stream, err)
 	}
 	defer tcpConn.Close()
 
-	if err = WriteMessage(stream, MessageTypeOK, nil); err != nil {
+	if err = WriteOK(stream, nil); err != nil {
 		return err
 	}
 

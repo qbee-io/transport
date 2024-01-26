@@ -99,3 +99,33 @@ func ReadMessage(r io.Reader) (messageType MessageType, payload []byte, err erro
 
 	return messageType, payload, nil
 }
+
+// WriteError writes an error message to the given writer.
+func WriteError(w io.Writer, err error) error {
+	_ = WriteMessage(w, MessageTypeError, []byte(err.Error()))
+	return err
+}
+
+// WriteOK writes an OK message to the given writer.
+func WriteOK(w io.Writer, payload []byte) error {
+	return WriteMessage(w, MessageTypeOK, payload)
+}
+
+// ExpectOK reads a message from the given reader and returns the payload if it is an OK message.
+// Otherwise, an error is returned.
+func ExpectOK(r io.Reader) ([]byte, error) {
+	msgType, payload, err := ReadMessage(r)
+	if err != nil {
+		return nil, fmt.Errorf("error reading message: %v", err)
+	}
+
+	if msgType == MessageTypeError {
+		return nil, fmt.Errorf("remote error: %s", payload)
+	}
+
+	if msgType != MessageTypeOK {
+		return nil, fmt.Errorf("got unexpected init response: %d", msgType)
+	}
+
+	return payload, nil
+}

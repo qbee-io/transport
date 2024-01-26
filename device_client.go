@@ -53,6 +53,7 @@ func NewDeviceClient(endpoint string, tlsConfig *tls.Config) (*DeviceClient, err
 		tlsConfig:  tlsConfig,
 		smuxConfig: DefaultSmuxConfig,
 		handlers:   make(map[MessageType]Handler),
+		goAwayCh:   make(chan bool, 1),
 	}
 
 	return cli, nil
@@ -68,6 +69,8 @@ type DeviceClient struct {
 	err        error
 	ready      sync.WaitGroup
 	handlers   map[MessageType]Handler
+	goAwayCh   chan bool
+	streamWg   sync.WaitGroup
 }
 
 // WithHandler sets the handler for the given message type.
@@ -98,11 +101,15 @@ func (cli *DeviceClient) startOnce(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-cli.goAwayCh:
+			cli.streamWg.Wait()
+			return nil
 		default:
 			var stream *smux.Stream
 			if stream, err = smuxSession.AcceptStream(); err != nil {
 				return err
 			}
+			cli.streamWg.Add(1)
 
 			go cli.handleStream(ctx, stream)
 		}
@@ -185,6 +192,7 @@ var deviceDialer = net.Dialer{}
 func (cli *DeviceClient) handleStream(ctx context.Context, stream *smux.Stream) {
 	// ensure the stream is always closed
 	defer stream.Close()
+	defer cli.streamWg.Done()
 
 	// each stream starts with a message defining the type of tunnel
 	messageType, payload, err := ReadMessage(stream)

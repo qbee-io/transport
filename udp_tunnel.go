@@ -395,12 +395,14 @@ func (t *UDPTunnel) getOrCreateStream(cliAddr *net.UDPAddr, listener *net.UDPCon
 }
 
 // Close closes the tunnel.
-func (t *UDPTunnel) Close() {
-	_ = t.localListener.Close()
+func (t *UDPTunnel) Close() error {
+	err := t.localListener.Close()
 
 	for _, stream := range t.streams {
 		stream.close()
 	}
+
+	return err
 }
 
 // newDeviceUDPListener creates a new UDP listener for the given destination address.

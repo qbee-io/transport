@@ -99,3 +99,14 @@ func ReadMessage(r io.Reader) (messageType MessageType, payload []byte, err erro
 
 	return messageType, payload, nil
 }
+
+// WriteError writes an error message to the given writer.
+func WriteError(w io.Writer, err error) error {
+	_ = WriteMessage(w, MessageTypeError, []byte(err.Error()))
+	return err
+}
+
+// WriteOK writes an OK message to the given writer.
+func WriteOK(w io.Writer, payload []byte) error {
+	return WriteMessage(w, MessageTypeOK, payload)
+}

@@ -122,7 +122,7 @@ func Test_UDPTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(udpTunnel.Close)
+	t.Cleanup(func() { _ = udpTunnel.Close() })
 
 	t.Log("cli: initializing listener")
 	var clientListener *net.UDPConn

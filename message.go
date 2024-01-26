@@ -28,27 +28,30 @@ type MessageType uint8
 const (
 	// MessageTypeOK indicates that requested operation was successful.
 	// The payload is empty.
-	MessageTypeOK MessageType = iota
+	MessageTypeOK MessageType = 0x01
 
 	// MessageTypeError indicates that requested operation failed.
 	// The payload contains the error message.
-	MessageTypeError
+	MessageTypeError MessageType = 0x02
+
+	// MessageTypeGoAway indicates that client should reconnect to another server.
+	MessageTypeGoAway MessageType = 0x03
 
 	// MessageTypeTCPTunnel indicates that the message is a TCP tunnel request.
 	// The payload contains the remote host and port.
-	MessageTypeTCPTunnel
+	MessageTypeTCPTunnel MessageType = 0x10
 
 	// MessageTypeUDPTunnel indicates that the message is a UDP tunnel request.
 	// The payload contains the suggested listener port, remote host and port.
-	MessageTypeUDPTunnel
+	MessageTypeUDPTunnel MessageType = 0x11
 
 	// MessageTypePTY indicates that the message is a PTY request.
 	// The payload contains initial JSON-encoded PTYCommand with PTYCommandTypeResize to set the initial window size.
-	MessageTypePTY
+	MessageTypePTY MessageType = 0x12
 
 	// MessageTypePTYCommand indicates that the message is a PTY command request.
 	// The payload contains JSON-encoded PTYCommand.
-	MessageTypePTYCommand
+	MessageTypePTYCommand MessageType = 0x13
 )
 
 // Message wire format:

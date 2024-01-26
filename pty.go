@@ -26,11 +26,11 @@ const (
 
 // PTYCommand carries a command to be executed on the PTY stream.
 type PTYCommand struct {
+	// SessionID is the session ID (initiated with MessageTypePTY) to which the command applies.
+	SessionID string `json:"sid"`
+
 	// Type is the type of the command to be executed on the PTY.
 	Type PTYCommandType `json:"type,omitempty"`
-
-	// StreamID is the ID of the stream (initiated with MessageTypePTY) to which the command applies.
-	StreamID uint32 `json:"sid"`
 
 	// Cols and Rows are the new window size.
 	// Those fields are only used when Type is PTYCommandTypeResize.

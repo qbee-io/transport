@@ -201,6 +201,11 @@ func (cli *DeviceClient) handleStream(ctx context.Context, stream *smux.Stream) 
 		return
 	}
 
+	if messageType == MessageTypeGoAway {
+		cli.goAwayCh <- true
+		return
+	}
+
 	handler, ok := cli.handlers[messageType]
 	if !ok {
 		log.Printf("unsupported handler: %v", messageType)

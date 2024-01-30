@@ -23,9 +23,9 @@ import (
 	"github.com/xtaci/smux"
 )
 
-// NewTCPTunnel tunnels local TCP connection through smux stream to the given remote host and port.
-func NewTCPTunnel(ctx context.Context, conn *net.TCPConn, session *smux.Session, remoteHostPort string) error {
-	stream, err := OpenStream(ctx, session, MessageTypeTCPTunnel, []byte(remoteHostPort))
+// NewTCPConn tunnels local TCP connection through smux stream to the given remote host and port.
+func (cli *Client) newTCPConnection(ctx context.Context, conn *net.TCPConn, remoteHostPort string) error {
+	stream, err := cli.OpenStream(ctx, MessageTypeTCPTunnel, []byte(remoteHostPort))
 	if err != nil {
 		return err
 	}

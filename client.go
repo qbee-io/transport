@@ -54,6 +54,30 @@ func (cli *Client) Close() error {
 	return cli.smuxSession.Close()
 }
 
+// OpenStream opens a new stream and sends the given message type and payload.
+func (cli *Client) OpenStream(ctx context.Context, msgType MessageType, payload []byte) (*smux.Stream, error) {
+	ioWaitTimeoutDuration := getIOWaitTimeout(ctx)
+
+	_ = cli.smuxSession.SetDeadline(time.Now().Add(ioWaitTimeoutDuration))
+
+	stream, err := cli.smuxSession.OpenStream()
+	if err != nil {
+		return nil, fmt.Errorf("error opening stream: %v", err)
+	}
+
+	if err = WriteMessage(stream, msgType, payload); err != nil {
+		_ = stream.Close()
+		return nil, err
+	}
+
+	if _, err = ExpectOK(stream); err != nil {
+		_ = stream.Close()
+		return nil, fmt.Errorf("error reading message: %v", err)
+	}
+
+	return stream, nil
+}
+
 // OpenTCPTunnel listens on the given local port and forwards all connections to the given remote host and port.
 // The returned listener can be used to close the tunnel.
 func (cli *Client) OpenTCPTunnel(ctx context.Context, localHostPort, remoteHostPort string) (*net.TCPListener, error) {
@@ -94,7 +118,7 @@ func (cli *Client) OpenTCPTunnel(ctx context.Context, localHostPort, remoteHostP
 			go func() {
 				defer tcpConnection.Close()
 
-				if connErr := NewTCPTunnel(ctx, tcpConnection, cli.smuxSession, remoteHostPort); connErr != nil {
+				if connErr := cli.newTCPConnection(ctx, tcpConnection, remoteHostPort); connErr != nil {
 					log.Printf("error forwarding TCP connection: %v", connErr)
 				}
 			}()
@@ -129,11 +153,11 @@ func (cli *Client) OpenUDPTunnel(ctx context.Context, localHostPort, remoteHostP
 
 	udpTunnel := &UDPTunnel{
 		ctx:            ctx,
+		cli:            cli,
 		ioWaitTimeout:  getIOWaitTimeout(ctx),
 		listenerAddr:   *udpLocalAddr,
 		dstPort:        uint16(dstPort),
 		remoteHostPort: remoteHostPort,
-		session:        cli.smuxSession,
 		localListener:  localListener,
 		streams:        make(map[string]*UDPStream),
 	}

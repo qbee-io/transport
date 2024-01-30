@@ -276,6 +276,10 @@ type UDPTunnel struct {
 	// It's used to cancel the tunnel.
 	ctx context.Context
 
+	// cli is the client used to connect to the edge.
+	// It's needed to open new streams.
+	cli *Client
+
 	// ioWaitTimeout is the timeout for all I/O operations.
 	ioWaitTimeout time.Duration
 
@@ -291,10 +295,6 @@ type UDPTunnel struct {
 
 	// localListener is the main local listener for the tunnel.
 	localListener *net.UDPConn
-
-	// session is the smux session for the tunnel.
-	// It's used to create new streams for new clients.
-	session *smux.Session
 
 	// streams is a map of client address (host:port) to streams.
 	// We use a separate stream for each client to provide isolation.
@@ -364,7 +364,7 @@ func (t *UDPTunnel) getOrCreateStream(cliAddr *net.UDPAddr, listener *net.UDPCon
 	// The device will attempt to use it, but if it fails, it will use a random port
 	payload := fmt.Sprintf("%d:%s", cliAddr.Port, t.remoteHostPort)
 
-	stream, err := OpenStream(t.ctx, t.session, MessageTypeUDPTunnel, []byte(payload))
+	stream, err := t.cli.OpenStream(t.ctx, MessageTypeUDPTunnel, []byte(payload))
 	if err != nil {
 		return nil, fmt.Errorf("error opening stream: %v", err)
 	}

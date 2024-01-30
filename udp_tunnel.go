@@ -276,6 +276,10 @@ type UDPTunnel struct {
 	// It's used to cancel the tunnel.
 	ctx context.Context
 
+	// cli is the client used to connect to the edge.
+	// It's needed to open new streams.
+	cli *Client
+
 	// ioWaitTimeout is the timeout for all I/O operations.
 	ioWaitTimeout time.Duration
 
@@ -364,7 +368,7 @@ func (t *UDPTunnel) getOrCreateStream(cliAddr *net.UDPAddr, listener *net.UDPCon
 	// The device will attempt to use it, but if it fails, it will use a random port
 	payload := fmt.Sprintf("%d:%s", cliAddr.Port, t.remoteHostPort)
 
-	stream, err := OpenStream(t.ctx, t.session, MessageTypeUDPTunnel, []byte(payload))
+	stream, err := t.cli.OpenStream(t.ctx, MessageTypeUDPTunnel, []byte(payload))
 	if err != nil {
 		return nil, fmt.Errorf("error opening stream: %v", err)
 	}

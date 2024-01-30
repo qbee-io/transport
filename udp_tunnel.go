@@ -296,10 +296,6 @@ type UDPTunnel struct {
 	// localListener is the main local listener for the tunnel.
 	localListener *net.UDPConn
 
-	// session is the smux session for the tunnel.
-	// It's used to create new streams for new clients.
-	session *smux.Session
-
 	// streams is a map of client address (host:port) to streams.
 	// We use a separate stream for each client to provide isolation.
 	streams map[string]*UDPStream

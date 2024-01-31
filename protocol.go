@@ -65,13 +65,18 @@ var DefaultSmuxConfig = &smux.Config{
 
 const protocolUpgradeResponse = "HTTP/1.1 101 Switching Protocols\r\n" +
 	"Connection: Upgrade\r\n" +
-	"Upgrade: " + Protocol + "\r\n" +
+	"Upgrade: websocket\r\n" +
+	"Sec-WebSocket-Protocol: " + Protocol + "\r\n" +
 	"\r\n"
 
 // UpgradeHandler upgrades the server request localListener to the remote access protocol.
 // For protocol errors, the handler will write an error response and return an error.
 func UpgradeHandler(w http.ResponseWriter, r *http.Request) (*smux.Session, error) {
-	if r.Header.Get("Connection") != "upgrade" || r.Header.Get("Upgrade") != Protocol {
+	connectionHeader := r.Header.Get("Connection")
+	upgradeHeader := r.Header.Get("Upgrade")
+	protocolHeader := r.Header.Get("Sec-WebSocket-Protocol")
+
+	if connectionHeader != "upgrade" || upgradeHeader != "websocket" || protocolHeader != Protocol {
 		w.WriteHeader(http.StatusUpgradeRequired)
 		return nil, fmt.Errorf("upgrade required")
 	}
@@ -114,7 +119,8 @@ func ClientConnect(ctx context.Context, endpointURL, authHeader string, tlsConfi
 	}
 
 	httpRequest.Header.Set("Connection", "upgrade")
-	httpRequest.Header.Set("Upgrade", Protocol)
+	httpRequest.Header.Set("Upgrade", "websocket")
+	httpRequest.Header.Set("Sec-WebSocket-Protocol", Protocol)
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{

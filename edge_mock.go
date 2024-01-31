@@ -24,14 +24,19 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"testing"
 
 	"github.com/xtaci/smux"
 )
 
+type Tester interface {
+	Errorf(format string, args ...interface{})
+	Fatalf(format string, args ...interface{})
+	Cleanup(action func())
+}
+
 // EdgeMock provides a minimalistic edge server implementation to make testing of clients a bit easier.
 type EdgeMock struct {
-	t          *testing.T
+	t          Tester
 	device     *smux.Session
 	httpServer *httptest.Server
 }
@@ -135,7 +140,7 @@ func (edge *EdgeMock) Client() *Client {
 }
 
 // NewEdgeMock creates a new test server and returns it together with a client and a device client connected to it.
-func NewEdgeMock(t *testing.T) (*Client, *DeviceClient, *EdgeMock) {
+func NewEdgeMock(t Tester) (*Client, *DeviceClient, *EdgeMock) {
 	edgeMock := &EdgeMock{t: t}
 	edgeMock.httpServer = httptest.NewTLSServer(edgeMock)
 	t.Cleanup(edgeMock.httpServer.Close)

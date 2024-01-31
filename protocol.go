@@ -53,14 +53,22 @@ func getIOWaitTimeout(ctx context.Context) time.Duration {
 // Protocol is the protocol to which the localListener is upgraded.
 const Protocol = "qbee-v1"
 
+const (
+	// KB kilobyte
+	KB = 1024
+
+	// MB megabyte
+	MB = 1024 * KB
+)
+
 // DefaultSmuxConfig is the default smux configuration.
 var DefaultSmuxConfig = &smux.Config{
 	Version:           2,
 	KeepAliveInterval: 45 * time.Second,
 	KeepAliveTimeout:  120 * time.Second,
-	MaxFrameSize:      32768,
-	MaxReceiveBuffer:  4194304,
-	MaxStreamBuffer:   65536,
+	MaxFrameSize:      32 * KB,
+	MaxReceiveBuffer:  4 * MB,
+	MaxStreamBuffer:   128 * KB,
 }
 
 const protocolUpgradeResponse = "HTTP/1.1 101 Switching Protocols\r\n" +

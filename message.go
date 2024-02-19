@@ -52,6 +52,9 @@ const (
 	// MessageTypePTYCommand indicates that the message is a PTY command request.
 	// The payload contains JSON-encoded PTYCommand.
 	MessageTypePTYCommand MessageType = 0x13
+
+	// MessageTypeReload triggers a configuration reload.
+	MessageTypeReload MessageType = 0x14
 )
 
 // Message wire format:

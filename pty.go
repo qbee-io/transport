@@ -36,4 +36,7 @@ type PTYCommand struct {
 	// Those fields are only used when Type is PTYCommandTypeResize.
 	Cols uint16 `json:"cols,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
+
+	// Command is the command to be executed on the PTY.
+	Command string `json:"command,omitempty"`
 }

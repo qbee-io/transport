@@ -54,28 +54,41 @@ func (cli *Client) Close() error {
 	return cli.smuxSession.Close()
 }
 
+// GetSession returns the underlying smux session.
+func (cli *Client) GetSession() *smux.Session {
+	return cli.smuxSession
+}
+
 // OpenStream opens a new stream and sends the given message type and payload.
 func (cli *Client) OpenStream(ctx context.Context, msgType MessageType, payload []byte) (*smux.Stream, error) {
+	stream, _, err := cli.OpenStreamPayload(ctx, msgType, payload)
+
+	return stream, err
+}
+
+// OpenStreamPayload opens a new stream and sends the given message type and payload.
+func (cli *Client) OpenStreamPayload(ctx context.Context, msgType MessageType, payload []byte) (*smux.Stream, []byte, error) {
 	ioWaitTimeoutDuration := getIOWaitTimeout(ctx)
 
 	_ = cli.smuxSession.SetDeadline(time.Now().Add(ioWaitTimeoutDuration))
 
 	stream, err := cli.smuxSession.OpenStream()
 	if err != nil {
-		return nil, fmt.Errorf("error opening stream: %v", err)
+		return nil, nil, fmt.Errorf("error opening stream: %v", err)
 	}
 
 	if err = WriteMessage(stream, msgType, payload); err != nil {
 		_ = stream.Close()
-		return nil, err
+		return nil, nil, err
 	}
 
-	if _, err = ExpectOK(stream); err != nil {
+	var responsePayload []byte
+	if responsePayload, err = ExpectOK(stream); err != nil {
 		_ = stream.Close()
-		return nil, fmt.Errorf("error reading message: %v", err)
+		return nil, nil, fmt.Errorf("error reading message: %v", err)
 	}
 
-	return stream, nil
+	return stream, responsePayload, nil
 }
 
 // OpenTCPTunnel listens on the given local port and forwards all connections to the given remote host and port.

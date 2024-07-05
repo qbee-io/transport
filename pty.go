@@ -22,9 +22,6 @@ type PTYCommandType uint8
 const (
 	// PTYCommandTypeResize indicates that the command is a resize request.
 	PTYCommandTypeResize PTYCommandType = iota
-
-	// PTYCommandTypeExec indicates that the command should be executed without PTY.
-	PTYCommandTypeExec
 )
 
 // PTYCommand carries a command to be executed on the PTY stream.

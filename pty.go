@@ -22,6 +22,9 @@ type PTYCommandType uint8
 const (
 	// PTYCommandTypeResize indicates that the command is a resize request.
 	PTYCommandTypeResize PTYCommandType = iota
+
+	// PTYCommandTypeExec indicates that the command should be executed without PTY.
+	PTYCommandTypeExec
 )
 
 // PTYCommand carries a command to be executed on the PTY stream.
@@ -39,7 +42,4 @@ type PTYCommand struct {
 
 	// Command is the command to be executed on the PTY.
 	Command string `json:"command,omitempty"`
-
-	// NoPTY is set to true if the command should not be executed on a PTY.
-	NoPTY bool `json:"no_pty,omitempty"`
 }

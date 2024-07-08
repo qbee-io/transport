@@ -55,6 +55,9 @@ const (
 
 	// MessageTypeReload triggers a configuration reload.
 	MessageTypeReload MessageType = 0x14
+
+	// MessageTypeCommand is a command to be executed without a PTY.
+	MessageTypeCommand MessageType = 0x15
 )
 
 // Message wire format:

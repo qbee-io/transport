@@ -39,4 +39,7 @@ type PTYCommand struct {
 
 	// Command is the command to be executed on the PTY.
 	Command string `json:"command,omitempty"`
+
+	// CommandArgs are the arguments to be passed to the command.
+	CommandArgs []string `json:"command_args,omitempty"`
 }

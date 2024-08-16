@@ -59,8 +59,8 @@ const (
 	// MessageTypeCommand is a command to be executed without a PTY.
 	MessageTypeCommand MessageType = 0x15
 
-	// MessageTypeKillCommand is a command to kill a running command.
-	MessageTypeKillCommand MessageType = 0x16
+	// MessageTypeCommandSignal is a command to signal a running command.
+	MessageTypeCommandKill MessageType = 0x16
 )
 
 // Message wire format:

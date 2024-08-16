@@ -17,7 +17,7 @@
 package transport
 
 type Command struct {
-	// SessionID is the session ID (initiated with MessageTypePTY) to which the command applies.
+	// SessionID is the session ID to which the command applies.
 	SessionID string `json:"sid"`
 
 	// Command is the command to be executed on the PTY.

@@ -29,7 +29,7 @@ func (cli *Client) newTCPConnection(ctx context.Context, conn *net.TCPConn, remo
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	_, _, err = Pipe(conn, stream)
 
@@ -42,7 +42,7 @@ func HandleTCPTunnel(ctx context.Context, stream *smux.Stream, remoteAddr []byte
 	if err != nil {
 		return WriteError(stream, err)
 	}
-	defer tcpConn.Close()
+	defer func() { _ = tcpConn.Close() }()
 
 	if err = WriteOK(stream, nil); err != nil {
 		return err

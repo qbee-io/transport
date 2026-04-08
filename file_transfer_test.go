@@ -286,7 +286,7 @@ func TestFileTransfer_LargeFile(t *testing.T) {
 	// Create a 2MB file with random content.
 	deviceDir := t.TempDir()
 	content := make([]byte, 2*1024*1024)
-	rand.Read(content)
+	_, _ = rand.Read(content)
 
 	if err := os.WriteFile(filepath.Join(deviceDir, "large.bin"), content, 0644); err != nil {
 		t.Fatalf("failed to create large file: %v", err)

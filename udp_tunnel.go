@@ -554,7 +554,7 @@ func HandleUDPTunnel(ctx context.Context, stream *smux.Stream, payload []byte) e
 	if udpListener, err = newDeviceUDPListener(dstAddr, suggestedSrcPort); err != nil {
 		return WriteError(stream, err)
 	}
-	defer udpListener.Close()
+	defer func() { _ = udpListener.Close() }()
 
 	if err = WriteOK(stream, nil); err != nil {
 		return err

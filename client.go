@@ -129,7 +129,7 @@ func (cli *Client) OpenTCPTunnel(ctx context.Context, localHostPort, remoteHostP
 			}
 
 			go func() {
-				defer tcpConnection.Close()
+				defer func() { _ = tcpConnection.Close() }()
 
 				if connErr := cli.newTCPConnection(ctx, tcpConnection, remoteHostPort); connErr != nil {
 					log.Printf("error forwarding TCP connection: %v", connErr)

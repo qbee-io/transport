@@ -32,18 +32,18 @@ import (
 // We use a timeout to avoid blocking the tunnel indefinitely.
 const ioWaitTimeout = 15 * time.Second
 
-var udpIOWaitTimeoutCtxKey = struct{}{}
+type udpIOWaitTimeoutCtxKey struct{}
 
 // WithIOWaitTimeout returns a copy of the context with the specified timeout for I/O operations.
 func WithIOWaitTimeout(ctx context.Context, timeout time.Duration) context.Context {
-	return context.WithValue(ctx, udpIOWaitTimeoutCtxKey, timeout)
+	return context.WithValue(ctx, udpIOWaitTimeoutCtxKey{}, timeout)
 }
 
 // getIOWaitTimeout returns the timeout for I/O operations.
 // If the context contains a timeout, that timeout will be returned.
 // Otherwise, the default timeout will be returned.
 func getIOWaitTimeout(ctx context.Context) time.Duration {
-	if timeout, ok := ctx.Value(udpIOWaitTimeoutCtxKey).(time.Duration); ok {
+	if timeout, ok := ctx.Value(udpIOWaitTimeoutCtxKey{}).(time.Duration); ok {
 		return timeout
 	}
 

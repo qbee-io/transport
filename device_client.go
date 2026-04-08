@@ -90,7 +90,7 @@ func (cli *DeviceClient) startOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer smuxSession.Close()
+	defer func() { _ = smuxSession.Close() }()
 
 	// mark client as ready and defer the removal of the ready marker
 	cli.ready.Done()
@@ -191,8 +191,10 @@ var deviceDialer = net.Dialer{}
 // handleStream handles a new stream and log any errors.
 func (cli *DeviceClient) handleStream(ctx context.Context, stream *smux.Stream) {
 	// ensure the stream is always closed
-	defer stream.Close()
-	defer cli.streamWg.Done()
+	defer func() {
+		_ = stream.Close()
+		cli.streamWg.Done()
+	}()
 
 	// each stream starts with a message defining the type of tunnel
 	messageType, payload, err := ReadMessage(stream)

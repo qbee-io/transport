@@ -61,7 +61,7 @@ func (edge *EdgeMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer smuxSession.Close()
+	defer func() { _ = smuxSession.Close() }()
 
 	if isDevice {
 		edge.device = smuxSession

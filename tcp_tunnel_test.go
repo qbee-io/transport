@@ -49,7 +49,7 @@ func Test_TCPTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error opening TCP tunnel: %v", err)
 	}
-	defer localListener.Close()
+	t.Cleanup(func() { _ = localListener.Close() })
 
 	testURL := "http://" + localListener.Addr().String()
 
@@ -90,13 +90,13 @@ func BenchmarkTCPTunnel(b *testing.B) {
 	if err != nil {
 		b.Fatalf("error opening remote listener: %v", err)
 	}
-	defer remoteListener.Close()
+	b.Cleanup(func() { _ = remoteListener.Close() })
 
 	var localListener net.Listener
 	if localListener, err = client.OpenTCPTunnel(ctx, "localhost:0", remoteListener.Addr().String()); err != nil {
 		b.Fatalf("error opening TCP tunnel: %v", err)
 	}
-	defer localListener.Close()
+	b.Cleanup(func() { _ = localListener.Close() })
 
 	var localConn, remoteConn net.Conn
 
@@ -108,12 +108,12 @@ func BenchmarkTCPTunnel(b *testing.B) {
 	if remoteConn, err = remoteListener.Accept(); err != nil {
 		b.Fatalf("error accepting remote connection: %v", err)
 	}
-	defer remoteConn.Close()
+	b.Cleanup(func() { _ = remoteConn.Close() })
 
 	if localConnErr != nil {
 		b.Fatalf("error opening local connection: %v", err)
 	}
-	defer localConn.Close()
+	b.Cleanup(func() { _ = localConn.Close() })
 
 	const bufSize = 128 * 1024
 	buf := make([]byte, bufSize)

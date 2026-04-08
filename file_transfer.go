@@ -69,7 +69,9 @@ func (cli *Client) DownloadFile(ctx context.Context, remotePath, localDestPath s
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer func() {
+		_ = stream.Close()
+	}()
 
 	tr := tar.NewReader(stream)
 	return extractTar(tr, localDestPath)
@@ -93,7 +95,9 @@ func (cli *Client) UploadFile(ctx context.Context, localPath, remoteDestPath str
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer func() {
+		_ = stream.Close()
+	}()
 
 	tw := tar.NewWriter(stream)
 
@@ -250,7 +254,9 @@ func archiveFile(tw *tar.Writer, absPath, relPath string, info os.FileInfo) erro
 	if err != nil {
 		return fmt.Errorf("error opening %s: %w", absPath, err)
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 
 	if _, err = io.Copy(tw, f); err != nil {
 		return fmt.Errorf("error writing %s to tar: %w", relPath, err)
@@ -342,7 +348,9 @@ func extractFile(tr *tar.Reader, targetPath string, header *tar.Header) error {
 	if err != nil {
 		return fmt.Errorf("error creating file %s: %w", targetPath, err)
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 
 	if _, err = io.Copy(f, io.LimitReader(tr, header.Size)); err != nil {
 		return fmt.Errorf("error extracting file %s: %w", targetPath, err)

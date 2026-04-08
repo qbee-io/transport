@@ -18,8 +18,8 @@ package transport
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"

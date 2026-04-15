@@ -17,12 +17,19 @@
 package transport
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/xtaci/smux"
 )
 
 func TestFileTransfer_DownloadSingleFile(t *testing.T) {
@@ -478,6 +485,80 @@ func TestValidatePath(t *testing.T) {
 				t.Errorf("path mismatch: got %q, want %q", got, tt.wantPath)
 			}
 		})
+	}
+}
+
+// TestFileTransfer_DownloadMultistreamDeadlock verifies that DownloadFile does not deadlock
+// when the device-side stream remains open after sending gzip data.
+// Without gzipReader.Multistream(false), the gzip reader blocks trying to read the next
+// gzip member header from the still-open stream.
+func TestFileTransfer_DownloadMultistreamDeadlock(t *testing.T) {
+	client, deviceClient, _ := NewEdgeMock(t)
+
+	handlerDone := make(chan struct{})
+	t.Cleanup(func() { close(handlerDone) })
+
+	// Custom handler that writes gzip(tar(file)) but keeps the stream open.
+	deviceClient.WithHandler(MessageTypeFile, func(ctx context.Context, stream *smux.Stream, payload []byte) error {
+		var req FileTransferRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return WriteError(stream, err)
+		}
+
+		if err := WriteOK(stream, nil); err != nil {
+			return err
+		}
+
+		gzipWriter := gzip.NewWriter(stream)
+		tarWriter := tar.NewWriter(gzipWriter)
+
+		if err := archivePath(tarWriter, req.Path); err != nil {
+			return err
+		}
+		if err := tarWriter.Close(); err != nil {
+			return err
+		}
+		if err := gzipWriter.Close(); err != nil {
+			return err
+		}
+
+		// Keep the handler alive so handleStream doesn't close the stream.
+		// This simulates a long-lived connection where the stream stays open.
+		select {
+		case <-ctx.Done():
+		case <-handlerDone:
+		}
+		return nil
+	})
+
+	deviceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(deviceDir, "test.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	clientDir := t.TempDir()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.DownloadFile(t.Context(), filepath.Join(deviceDir, "test.txt"), clientDir)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("DownloadFile failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DownloadFile deadlocked - gzip.Reader.Multistream(false) is missing")
+	}
+
+	// Verify the file was downloaded correctly.
+	got, err := os.ReadFile(filepath.Join(clientDir, "test.txt"))
+	if err != nil {
+		t.Fatalf("failed to read downloaded file: %v", err)
+	}
+	if !bytes.Equal(got, []byte("hello")) {
+		t.Fatalf("content mismatch: got %q", got)
 	}
 }
 

@@ -18,6 +18,7 @@ package transport
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -73,8 +74,21 @@ func (cli *Client) DownloadFile(ctx context.Context, remotePath, localDestPath s
 		_ = stream.Close()
 	}()
 
-	tr := tar.NewReader(stream)
-	return extractTar(tr, localDestPath)
+	gzipReader, err := gzip.NewReader(stream)
+	if err != nil {
+		return fmt.Errorf("error creating gzip reader: %w", err)
+	}
+
+	gzipReader.Multistream(false)
+
+	tarReader := tar.NewReader(gzipReader)
+
+	if err = extractTar(tarReader, localDestPath); err != nil {
+		_ = gzipReader.Close()
+		return fmt.Errorf("error extracting tar: %w", err)
+	}
+
+	return gzipReader.Close()
 }
 
 // UploadFile uploads a local file or directory to the device.
@@ -99,16 +113,22 @@ func (cli *Client) UploadFile(ctx context.Context, localPath, remoteDestPath str
 		_ = stream.Close()
 	}()
 
-	tw := tar.NewWriter(stream)
+	gzipWriter := gzip.NewWriter(stream)
 
-	if err = archivePath(tw, localPath); err != nil {
+	tarWriter := tar.NewWriter(gzipWriter)
+
+	if err = archivePath(tarWriter, localPath); err != nil {
 		return err
 	}
 
 	// Close the tar writer to flush end-of-archive markers.
 	// The device will detect the end of the tar stream and send a final response.
-	if err = tw.Close(); err != nil {
+	if err = tarWriter.Close(); err != nil {
 		return err
+	}
+
+	if err = gzipWriter.Close(); err != nil {
+		return fmt.Errorf("error closing gzip writer: %w", err)
 	}
 
 	// Wait for the device to confirm extraction completed.
@@ -150,13 +170,19 @@ func handleDownload(stream *smux.Stream, path string) error {
 		return err
 	}
 
-	tw := tar.NewWriter(stream)
+	gzipWriter := gzip.NewWriter(stream)
 
-	if err := archivePath(tw, path); err != nil {
+	tarWriter := tar.NewWriter(gzipWriter)
+
+	if err := archivePath(tarWriter, path); err != nil {
 		return err
 	}
 
-	return tw.Close()
+	if err := tarWriter.Close(); err != nil {
+		return err
+	}
+
+	return gzipWriter.Close()
 }
 
 func handleUpload(stream *smux.Stream, destPath string) error {
@@ -173,10 +199,23 @@ func handleUpload(stream *smux.Stream, destPath string) error {
 		return err
 	}
 
-	tr := tar.NewReader(stream)
+	gzipReader, err := gzip.NewReader(stream)
+	if err != nil {
+		return fmt.Errorf("error creating gzip reader: %w", err)
+	}
 
-	if extractErr := extractTar(tr, destPath); extractErr != nil {
-		return WriteError(stream, extractErr)
+	// Disable multistream so the reader returns io.EOF after the first gzip member
+	// instead of blocking while trying to read the next member from the still-open stream.
+	gzipReader.Multistream(false)
+
+	tarReader := tar.NewReader(gzipReader)
+
+	if err := extractTar(tarReader, destPath); err != nil {
+		return err
+	}
+
+	if err = gzipReader.Close(); err != nil {
+		return fmt.Errorf("error closing gzip reader: %w", err)
 	}
 
 	return WriteOK(stream, nil)
@@ -187,17 +226,8 @@ func handleUpload(stream *smux.Stream, destPath string) error {
 // For a directory, the archive contains the directory and all its contents,
 // preserving the top-level directory name.
 // Symlinks pointing outside basePath are silently skipped.
-func archivePath(tw *tar.Writer, basePath string) error {
+func archivePath(tarWriter *tar.Writer, basePath string) error {
 	basePath = filepath.Clean(basePath)
-
-	info, err := os.Lstat(basePath)
-	if err != nil {
-		return fmt.Errorf("error stat %s: %w", basePath, err)
-	}
-
-	if !info.IsDir() {
-		return archiveFile(tw, basePath, info.Name(), info)
-	}
 
 	// filepath.Walk uses os.Lstat internally, so info has the symlink bit set.
 	return filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
@@ -215,11 +245,11 @@ func archivePath(tw *tar.Writer, basePath string) error {
 
 		switch {
 		case info.Mode()&os.ModeSymlink != 0:
-			return archiveSymlink(tw, basePath, path, relPath)
+			return archiveSymlink(tarWriter, basePath, path, relPath)
 		case info.IsDir():
-			return archiveDir(tw, relPath, info)
+			return archiveDir(tarWriter, relPath, info)
 		case info.Mode().IsRegular():
-			return archiveFile(tw, path, relPath, info)
+			return archiveFile(tarWriter, path, relPath, info)
 		default:
 			// Skip special files (devices, sockets, etc.)
 			return nil
@@ -227,7 +257,7 @@ func archivePath(tw *tar.Writer, basePath string) error {
 	})
 }
 
-func archiveDir(tw *tar.Writer, relPath string, info os.FileInfo) error {
+func archiveDir(tarWriter *tar.Writer, relPath string, info os.FileInfo) error {
 	header, err := tar.FileInfoHeader(info, "")
 	if err != nil {
 		return fmt.Errorf("error creating tar header for directory %s: %w", relPath, err)
@@ -235,10 +265,10 @@ func archiveDir(tw *tar.Writer, relPath string, info os.FileInfo) error {
 
 	header.Name = relPath + "/"
 
-	return tw.WriteHeader(header)
+	return tarWriter.WriteHeader(header)
 }
 
-func archiveFile(tw *tar.Writer, absPath, relPath string, info os.FileInfo) error {
+func archiveFile(tarWriter *tar.Writer, absPath, relPath string, info os.FileInfo) error {
 	header, err := tar.FileInfoHeader(info, "")
 	if err != nil {
 		return fmt.Errorf("error creating tar header for %s: %w", relPath, err)
@@ -246,7 +276,7 @@ func archiveFile(tw *tar.Writer, absPath, relPath string, info os.FileInfo) erro
 
 	header.Name = relPath
 
-	if err = tw.WriteHeader(header); err != nil {
+	if err = tarWriter.WriteHeader(header); err != nil {
 		return fmt.Errorf("error writing tar header for %s: %w", relPath, err)
 	}
 
@@ -258,14 +288,14 @@ func archiveFile(tw *tar.Writer, absPath, relPath string, info os.FileInfo) erro
 		_ = f.Close()
 	}()
 
-	if _, err = io.Copy(tw, f); err != nil {
+	if _, err = io.Copy(tarWriter, f); err != nil {
 		return fmt.Errorf("error writing %s to tar: %w", relPath, err)
 	}
 
 	return nil
 }
 
-func archiveSymlink(tw *tar.Writer, basePath, absPath, relPath string) error {
+func archiveSymlink(tarWriter *tar.Writer, basePath, absPath, relPath string) error {
 	linkTarget, err := os.Readlink(absPath)
 	if err != nil {
 		return fmt.Errorf("error reading symlink %s: %w", absPath, err)
@@ -292,17 +322,17 @@ func archiveSymlink(tw *tar.Writer, basePath, absPath, relPath string) error {
 		Linkname: filepath.ToSlash(linkTarget),
 	}
 
-	return tw.WriteHeader(header)
+	return tarWriter.WriteHeader(header)
 }
 
 // extractTar reads a tar archive and extracts its contents to destPath.
 // All paths are validated to prevent directory traversal attacks.
 // Symlinks with targets outside destPath are rejected.
-func extractTar(tr *tar.Reader, destPath string) error {
+func extractTar(tarReader *tar.Reader, destPath string) error {
 	destPath = filepath.Clean(destPath)
 
 	for {
-		header, err := tr.Next()
+		header, err := tarReader.Next()
 		if err == io.EOF {
 			return nil
 		}
@@ -323,7 +353,7 @@ func extractTar(tr *tar.Reader, destPath string) error {
 			}
 
 		case tar.TypeReg:
-			if err = extractFile(tr, targetPath, header); err != nil {
+			if err = extractFile(tarReader, targetPath, header); err != nil {
 				return err
 			}
 
@@ -339,7 +369,7 @@ func extractTar(tr *tar.Reader, destPath string) error {
 	}
 }
 
-func extractFile(tr *tar.Reader, targetPath string, header *tar.Header) error {
+func extractFile(tarReader *tar.Reader, targetPath string, header *tar.Header) error {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 		return fmt.Errorf("error creating parent directory for %s: %w", targetPath, err)
 	}
@@ -352,7 +382,7 @@ func extractFile(tr *tar.Reader, targetPath string, header *tar.Header) error {
 		_ = f.Close()
 	}()
 
-	if _, err = io.Copy(f, io.LimitReader(tr, header.Size)); err != nil {
+	if _, err = io.Copy(f, io.LimitReader(tarReader, header.Size)); err != nil {
 		return fmt.Errorf("error extracting file %s: %w", targetPath, err)
 	}
 

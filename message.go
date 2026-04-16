@@ -55,6 +55,10 @@ const (
 
 	// MessageTypeReload triggers a configuration reload.
 	MessageTypeReload MessageType = 0x14
+
+	// MessageTypeFile indicates that the message is a file transfer request.
+	// The payload contains a JSON-encoded FileTransferRequest.
+	MessageTypeFile MessageType = 0x20
 )
 
 // Message wire format:

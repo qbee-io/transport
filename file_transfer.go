@@ -43,6 +43,12 @@ func (e ErrFileTransfer) Error() string {
 	return e.Message
 }
 
+func fileTransferErrorfromRemoteError(err error) error {
+	return ErrFileTransfer{
+		Message: strings.TrimPrefix(err.Error(), "error reading message: remote error: "),
+	}
+}
+
 const (
 	// FileTransferDownload transfers files from device to client.
 	FileTransferDownload FileTransferDirection = 0
@@ -78,7 +84,7 @@ func (cli *Client) DownloadFile(ctx context.Context, remotePath, localDestPath s
 
 	stream, err := cli.OpenStream(ctx, MessageTypeFile, payload)
 	if err != nil {
-		return err
+		return fileTransferErrorfromRemoteError(err)
 	}
 	defer func() {
 		_ = stream.Close()
@@ -125,7 +131,7 @@ func (cli *Client) UploadFile(ctx context.Context, localPath, remoteDestPath str
 
 	stream, err := cli.OpenStream(ctx, MessageTypeFile, payload)
 	if err != nil {
-		return err
+		return fileTransferErrorfromRemoteError(err)
 	}
 	defer func() {
 		_ = stream.Close()

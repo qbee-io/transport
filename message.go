@@ -127,7 +127,7 @@ func ExpectOK(r io.Reader) ([]byte, error) {
 	}
 
 	if msgType == MessageTypeError {
-		return nil, ErrFileTransfer{Message: string(payload)}
+		return nil, fmt.Errorf("remote error: %s", payload)
 	}
 
 	if msgType != MessageTypeOK {

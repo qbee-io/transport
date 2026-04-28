@@ -105,6 +105,14 @@ func (cli *Client) DownloadFile(ctx context.Context, remotePath, localDestPath s
 // localPath is the local file or directory to archive and send.
 // remoteDestPath must be an absolute path on the device where files will be extracted.
 func (cli *Client) UploadFile(ctx context.Context, localPath, remoteDestPath string) error {
+	// Validate that the source path exists before attempting to upload
+	if _, err := os.Lstat(localPath); err != nil {
+		if os.IsNotExist(err) {
+			return ErrFileTransfer{Message: "Source path does not exist"}
+		}
+		return err
+	}
+
 	req := FileTransferRequest{
 		Direction: FileTransferUpload,
 		Path:      remoteDestPath,
@@ -199,16 +207,15 @@ func handleDownload(stream *smux.Stream, path string) error {
 }
 
 func handleUpload(stream *smux.Stream, destPath string) error {
-	info, err := os.Stat(destPath)
-	if err != nil {
-		return WriteError(stream, err)
+	if _, err := os.Stat(destPath); err != nil {
+		if os.IsNotExist(err) {
+			return WriteError(stream, ErrFileTransfer{Message: "Destination path does not exist"})
+		}
+
+		return err
 	}
 
-	if !info.IsDir() {
-		return WriteError(stream, fmt.Errorf("upload destination must be a directory"))
-	}
-
-	if err = WriteOK(stream, nil); err != nil {
+	if err := WriteOK(stream, nil); err != nil {
 		return err
 	}
 
@@ -342,12 +349,9 @@ func archiveSymlink(tarWriter *tar.Writer, basePath, absPath, relPath string) er
 // All paths are validated to prevent directory traversal attacks.
 // Symlinks with targets outside destPath are rejected.
 //
-// Behavior when destPath does not exist as a directory:
-//   - If the first archive entry is a directory (source was a directory), destPath is created
-//     and the top-level directory name is stripped so its contents land directly in destPath.
-//   - If the first archive entry is a regular file (source was a single file), destPath is
-//     treated as the exact target filename when its basename has a file extension; otherwise
-//     ErrFileTransfer is returned indicating the destination directory is missing.
+// For directories: creates destPath if needed and extracts contents.
+// For single files: destPath can be an existing directory (extract file there),
+// an existing file (overwrite), or a new file path (parent directory must exist).
 func extractTar(tarReader *tar.Reader, destPath string) error {
 	destPath = filepath.Clean(destPath)
 
@@ -357,7 +361,7 @@ func extractTar(tarReader *tar.Reader, destPath string) error {
 	}
 
 	// destPath does not exist (or is not a directory). Peek at the first archive entry to
-	// determine the source type and decide how to handle the missing destination.
+	// determine the source type and decide how to handle the destination.
 	header, err := tarReader.Next()
 	if err == io.EOF {
 		return nil
@@ -378,17 +382,10 @@ func extractTar(tarReader *tar.Reader, destPath string) error {
 		return extractTarEntries(tarReader, destPath, header.Name)
 
 	case tar.TypeReg:
-		// Source is a single file. destPath is treated as the exact target path only when
-		// its basename looks like a filename (has a file extension). Otherwise the caller
-		// intended destPath to be a directory, which must already exist.
-		if filepath.Ext(filepath.Base(destPath)) == "" {
-			return ErrFileTransfer{Message: "Destination path does not exist or is not a directory"}
-		}
-
 		return extractFile(tarReader, destPath, header)
 
 	default:
-		return ErrFileTransfer{Message: "Destination path does not exist or is not a directory"}
+		return ErrFileTransfer{Message: "Transfer of this file type is not supported"}
 	}
 }
 
@@ -445,8 +442,15 @@ func extractTarEntries(tarReader *tar.Reader, destPath, stripPrefix string) erro
 }
 
 func extractFile(tarReader *tar.Reader, targetPath string, header *tar.Header) error {
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		return fmt.Errorf("error creating parent directory for %s: %w", targetPath, err)
+	parentDir := filepath.Dir(targetPath)
+	if parentDirInfo, err := os.Lstat(parentDir); err != nil {
+		if os.IsNotExist(err) {
+			return ErrFileTransfer{Message: "Destination directory does not exist"}
+		}
+
+		return err
+	} else if !parentDirInfo.IsDir() {
+		return ErrFileTransfer{Message: "Invalid destination - not a directory"}
 	}
 
 	f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))

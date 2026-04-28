@@ -37,7 +37,7 @@ func TestFileTransfer_PathHandling_Download(t *testing.T) {
 	testCases := []struct {
 		name        string   // descriptive name of the test case
 		deviceFS    []string // list of file paths, directories end with "/"
-		clientFS    []string // initial file paths on client before transfer
+		clientFS    []string // initial file paths on client before transfer, directories end with "/"
 		requestPath string   // path requested for transfer
 		destPath    string   // destination path on client
 		expectedFS  []string // expected file paths on client after transfer
@@ -64,8 +64,16 @@ func TestFileTransfer_PathHandling_Download(t *testing.T) {
 			deviceFS:    []string{"/device/", "/device/file.txt"},
 			clientFS:    []string{},
 			requestPath: "/device/file.txt",
-			destPath:    "/client/",
-			expectError: "Destination path does not exist or is not a directory",
+			destPath:    "/client/sub-dir/",
+			expectError: "Destination directory does not exist",
+		},
+		{
+			name:        "download existing file to a base dir which exists but is a file not a directory",
+			deviceFS:    []string{"/device/", "/device/file.txt"},
+			clientFS:    []string{"/client"}, // note: /client is a file, not a directory
+			requestPath: "/device/file.txt",
+			destPath:    "/client/sub-dir/",
+			expectError: "Invalid destination - not a directory",
 		},
 		{
 			name:        "download non-existing file",
@@ -460,11 +468,12 @@ func TestFileTransfer_UploadToFilePath(t *testing.T) {
 
 	// Create a source file.
 	clientDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(clientDir, "test.txt"), []byte("data"), 0644); err != nil {
+	sourceContent := []byte("new data")
+	if err := os.WriteFile(filepath.Join(clientDir, "test.txt"), sourceContent, 0644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	// Try to upload to a file (not a directory).
+	// Upload to a file (not a directory) - should overwrite the existing file.
 	deviceDir := t.TempDir()
 	deviceFile := filepath.Join(deviceDir, "not_a_dir")
 	if err := os.WriteFile(deviceFile, []byte("existing"), 0644); err != nil {
@@ -472,8 +481,18 @@ func TestFileTransfer_UploadToFilePath(t *testing.T) {
 	}
 
 	err := client.UploadFile(ctx, filepath.Join(clientDir, "test.txt"), deviceFile)
-	if err == nil {
-		t.Fatal("expected error when uploading to a file path, got nil")
+	if err != nil {
+		t.Fatalf("unexpected error when uploading to a file path: %v", err)
+	}
+
+	// Verify the file was overwritten with the new content.
+	got, err := os.ReadFile(deviceFile)
+	if err != nil {
+		t.Fatalf("failed to read uploaded file: %v", err)
+	}
+
+	if !bytes.Equal(got, sourceContent) {
+		t.Fatalf("file content mismatch: got %q, want %q", got, sourceContent)
 	}
 }
 

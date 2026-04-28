@@ -33,6 +33,16 @@ import (
 // FileTransferDirection defines the direction of a file transfer.
 type FileTransferDirection uint8
 
+// ErrFileTransfer represents an error that occurred during file transfer operations.
+type ErrFileTransfer struct {
+	Message string
+}
+
+// Error implements the error interface for ErrFileTransfer.
+func (e ErrFileTransfer) Error() string {
+	return e.Message
+}
+
 const (
 	// FileTransferDownload transfers files from device to client.
 	FileTransferDownload FileTransferDirection = 0

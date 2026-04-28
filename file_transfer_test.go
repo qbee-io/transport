@@ -24,6 +24,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,6 +32,126 @@ import (
 
 	"github.com/xtaci/smux"
 )
+
+func TestFileTransfer_PathHandling(t *testing.T) {
+	testCases := []struct {
+		name        string   // descriptive name of the test case
+		deviceFS    []string // list of file paths, directories end with "/"
+		clientFS    []string // initial file paths on client before transfer
+		requestPath string   // path requested for transfer
+		destPath    string   // destination path on client
+		expectedFS  []string // expected file paths on client after transfer
+		expectError string   // expected error message in ErrFileTransfer, empty if no error expected
+	}{
+		{
+			name:        "download existing file to an existing base dir",
+			deviceFS:    []string{"/device/", "/device/file.txt"},
+			clientFS:    []string{"/client/"},
+			requestPath: "/device/file.txt",
+			destPath:    "/client/",
+			expectedFS:  []string{"/client/file.txt"},
+		},
+		{
+			name:        "download existing file to an existing base dir with different filename",
+			deviceFS:    []string{"/device/", "/device/file.txt"},
+			clientFS:    []string{"/client/"},
+			requestPath: "/device/file.txt",
+			destPath:    "/client/file2.txt",
+			expectedFS:  []string{"/client/file2.txt"},
+		},
+		{
+			name:        "download existing file to a non-existing base dir",
+			deviceFS:    []string{"/device/", "/device/file.txt"},
+			clientFS:    []string{},
+			requestPath: "/device/file.txt",
+			destPath:    "/client/",
+			expectError: "Destination path does not exist or is not a directory",
+		},
+		{
+			name:        "download non-existing file",
+			deviceFS:    []string{"/device/"},
+			clientFS:    []string{"/client/"},
+			requestPath: "/device/file.txt",
+			destPath:    "/client/",
+			expectError: "Source path does not exist",
+		},
+		{
+			name:        "download a directory to an existing base dir results in a new subdir under the dest dir",
+			deviceFS:    []string{"/device/", "/device/dir/", "/device/dir/file1.txt", "/device/dir/file2.txt"},
+			clientFS:    []string{"/client/"},
+			requestPath: "/device/dir/",
+			destPath:    "/client/",
+			expectedFS:  []string{"/client/dir/file1.txt", "/client/dir/file2.txt"},
+		},
+		{
+			name:        "download a directory to non existing base dir results in copying the content of the directory to the destination directory",
+			deviceFS:    []string{"/device/", "/device/dir/", "/device/dir/file1.txt", "/device/dir/file2.txt"},
+			clientFS:    []string{"/"},
+			requestPath: "/device/dir/",
+			destPath:    "/client/",
+			expectedFS:  []string{"/client/file1.txt", "/client/file2.txt"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, deviceClient, _ := NewEdgeMock(t)
+			deviceClient.WithHandler(MessageTypeFile, HandleFileTransfer)
+			ctx := t.Context()
+			deviceDir := t.TempDir()
+			clientDir := t.TempDir()
+
+			// Setup device filesystem
+			for _, path := range tc.deviceFS {
+				if path[len(path)-1] == '/' {
+					if err := os.MkdirAll(filepath.Join(deviceDir, path), 0755); err != nil {
+						t.Fatalf("failed to create device dir %s: %v", path, err)
+					}
+				} else {
+					if err := os.WriteFile(filepath.Join(deviceDir, path), []byte("data"), 0644); err != nil {
+						t.Fatalf("failed to create device file %s: %v", path, err)
+					}
+				}
+			}
+
+			// Setup client filesystem
+			for _, path := range tc.clientFS {
+				if path[len(path)-1] == '/' {
+					if err := os.MkdirAll(filepath.Join(clientDir, path), 0755); err != nil {
+						t.Fatalf("failed to create client dir %s: %v", path, err)
+					}
+				} else {
+					if err := os.WriteFile(filepath.Join(clientDir, path), []byte("data"), 0644); err != nil {
+						t.Fatalf("failed to create client file %s: %v", path, err)
+					}
+				}
+			}
+
+			// Perform the file transfer
+			requestedPath := filepath.Join(deviceDir, tc.requestPath)
+			destPath := filepath.Join(clientDir, tc.destPath)
+			err := client.DownloadFile(ctx, requestedPath, destPath)
+			if tc.expectError != "" {
+				var fileErr ErrFileTransfer
+				if !errors.As(err, &fileErr) || fileErr.Message != tc.expectError {
+					t.Errorf("expected error %q, got %v", tc.expectError, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Verify expected filesystem state on client
+			for _, expectedPath := range tc.expectedFS {
+				if _, err := os.Stat(filepath.Join(clientDir, expectedPath)); os.IsNotExist(err) {
+					t.Errorf("expected file %s does not exist on client", expectedPath)
+				}
+			}
+		})
+	}
+}
 
 func TestFileTransfer_DownloadSingleFile(t *testing.T) {
 	client, deviceClient, _ := NewEdgeMock(t)
@@ -452,13 +573,13 @@ func TestValidatePath(t *testing.T) {
 		},
 		{
 			name:    "path traversal with dot-dot",
-			base:     "/tmp/extract",
+			base:    "/tmp/extract",
 			entry:   "../etc/passwd",
 			wantErr: true,
 		},
 		{
 			name:    "path traversal mid-path",
-			base:     "/tmp/extract",
+			base:    "/tmp/extract",
 			entry:   "dir/../../etc/passwd",
 			wantErr: true,
 		},

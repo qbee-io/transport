@@ -85,7 +85,7 @@ func (cli *Client) OpenStreamPayload(ctx context.Context, msgType MessageType, p
 	var responsePayload []byte
 	if responsePayload, err = ExpectOK(stream); err != nil {
 		_ = stream.Close()
-		return nil, nil, fmt.Errorf("error reading message: %v", err)
+		return nil, nil, fmt.Errorf("error reading message: %w", err)
 	}
 
 	return stream, responsePayload, nil

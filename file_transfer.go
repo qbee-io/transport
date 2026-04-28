@@ -173,6 +173,9 @@ func HandleFileTransfer(ctx context.Context, stream *smux.Stream, payload []byte
 
 func handleDownload(stream *smux.Stream, path string) error {
 	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return WriteError(stream, ErrFileTransfer{Message: "Source path does not exist"})
+		}
 		return WriteError(stream, err)
 	}
 
@@ -338,9 +341,61 @@ func archiveSymlink(tarWriter *tar.Writer, basePath, absPath, relPath string) er
 // extractTar reads a tar archive and extracts its contents to destPath.
 // All paths are validated to prevent directory traversal attacks.
 // Symlinks with targets outside destPath are rejected.
+//
+// Behavior when destPath does not exist as a directory:
+//   - If the first archive entry is a directory (source was a directory), destPath is created
+//     and the top-level directory name is stripped so its contents land directly in destPath.
+//   - If the first archive entry is a regular file (source was a single file), destPath is
+//     treated as the exact target filename when its basename has a file extension; otherwise
+//     ErrFileTransfer is returned indicating the destination directory is missing.
 func extractTar(tarReader *tar.Reader, destPath string) error {
 	destPath = filepath.Clean(destPath)
 
+	// If destPath already exists as a directory, extract normally.
+	if info, err := os.Stat(destPath); err == nil && info.IsDir() {
+		return extractTarEntries(tarReader, destPath, "")
+	}
+
+	// destPath does not exist (or is not a directory). Peek at the first archive entry to
+	// determine the source type and decide how to handle the missing destination.
+	header, err := tarReader.Next()
+	if err == io.EOF {
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("error reading tar: %w", err)
+	}
+
+	switch header.Typeflag {
+	case tar.TypeDir:
+		// Source is a directory. Create destPath and extract its contents with the
+		// top-level directory name stripped so files land directly inside destPath.
+		if err = os.MkdirAll(destPath, os.FileMode(header.Mode)); err != nil {
+			return fmt.Errorf("error creating directory %s: %w", destPath, err)
+		}
+
+		return extractTarEntries(tarReader, destPath, header.Name)
+
+	case tar.TypeReg:
+		// Source is a single file. destPath is treated as the exact target path only when
+		// its basename looks like a filename (has a file extension). Otherwise the caller
+		// intended destPath to be a directory, which must already exist.
+		if filepath.Ext(filepath.Base(destPath)) == "" {
+			return ErrFileTransfer{Message: "Destination path does not exist or is not a directory"}
+		}
+
+		return extractFile(tarReader, destPath, header)
+
+	default:
+		return ErrFileTransfer{Message: "Destination path does not exist or is not a directory"}
+	}
+}
+
+// extractTarEntries extracts tar entries into destPath, optionally stripping a prefix from each entry name.
+// If stripPrefix is non-empty, it will be removed from the beginning of each entry name, and entries
+// that are empty after stripping will be skipped (useful when extracting a directory's contents into a new location).
+func extractTarEntries(tarReader *tar.Reader, destPath, stripPrefix string) error {
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -351,7 +406,17 @@ func extractTar(tarReader *tar.Reader, destPath string) error {
 			return fmt.Errorf("error reading tar: %w", err)
 		}
 
-		targetPath, err := validatePath(destPath, header.Name)
+		// If a prefix should be stripped, do that and skip empty entries
+		entryName := header.Name
+		if stripPrefix != "" {
+			entryName = strings.TrimPrefix(header.Name, stripPrefix)
+			if entryName == "" {
+				// Entry is the top-level directory itself – already created, skip.
+				continue
+			}
+		}
+
+		targetPath, err := validatePath(destPath, entryName)
 		if err != nil {
 			return err
 		}

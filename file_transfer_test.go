@@ -27,7 +27,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -245,10 +244,9 @@ func TestFileTransfer_PathHandling_Upload(t *testing.T) {
 			destPath := filepath.Join(deviceDir, tc.destPath)
 			err := client.UploadFile(ctx, sourcePath, destPath)
 			if tc.expectError != "" {
-				if err == nil {
-					t.Errorf("expected error containing %q, got nil", tc.expectError)
-				} else if !strings.Contains(err.Error(), tc.expectError) {
-					t.Errorf("expected error containing %q, got %v", tc.expectError, err)
+				var fileErr ErrFileTransfer
+				if !errors.As(err, &fileErr) || fileErr.Message != tc.expectError {
+					t.Errorf("expected error %q, got %v", tc.expectError, err)
 				}
 				return
 			}

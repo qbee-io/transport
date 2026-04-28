@@ -416,6 +416,10 @@ func validatePath(basePath, entryName string) (string, error) {
 		return cleanPath, nil
 	}
 
+	if cleanBase == "/" {
+		return cleanPath, nil
+	}
+
 	if !strings.HasPrefix(cleanPath, cleanBase+string(filepath.Separator)) {
 		return "", fmt.Errorf("path traversal detected: %s", entryName)
 	}

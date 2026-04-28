@@ -82,10 +82,10 @@ func TestFileTransfer_DownloadDirectory(t *testing.T) {
 	}
 
 	files := map[string][]byte{
-		filepath.Join(tree, "README.md"):                []byte("# Project"),
-		filepath.Join(tree, "src", "main.go"):           []byte("package main"),
-		filepath.Join(tree, "src", "nested", "lib.go"):  []byte("package nested"),
-		filepath.Join(tree, "docs", "guide.txt"):        []byte("usage guide"),
+		filepath.Join(tree, "README.md"):               []byte("# Project"),
+		filepath.Join(tree, "src", "main.go"):          []byte("package main"),
+		filepath.Join(tree, "src", "nested", "lib.go"): []byte("package nested"),
+		filepath.Join(tree, "docs", "guide.txt"):       []byte("usage guide"),
 	}
 	for path, content := range files {
 		if err := os.WriteFile(path, content, 0644); err != nil {
@@ -164,7 +164,7 @@ func TestFileTransfer_UploadDirectory(t *testing.T) {
 	files := map[string][]byte{
 		filepath.Join(tree, "bin", "app"):            []byte("binary content"),
 		filepath.Join(tree, "config", "app.yaml"):    []byte("key: value"),
-		filepath.Join(tree, "config", "secrets.env"):  []byte("SECRET=abc"),
+		filepath.Join(tree, "config", "secrets.env"): []byte("SECRET=abc"),
 	}
 	for path, content := range files {
 		if err := os.WriteFile(path, content, 0644); err != nil {
@@ -422,44 +422,56 @@ func TestFileTransfer_SymlinkEscapingSkipped(t *testing.T) {
 }
 
 func TestValidatePath(t *testing.T) {
-	base := "/tmp/extract"
-
 	tests := []struct {
 		name     string
+		base     string
 		entry    string
 		wantErr  bool
 		wantPath string
 	}{
 		{
 			name:     "simple file",
+			base:     "/tmp/extract",
 			entry:    "file.txt",
 			wantErr:  false,
 			wantPath: "/tmp/extract/file.txt",
 		},
 		{
+			name:     "root base",
+			base:     "/",
+			entry:    "file.txt",
+			wantErr:  false,
+			wantPath: "/file.txt",
+		},
+		{
 			name:     "nested file",
+			base:     "/tmp/extract",
 			entry:    "dir/subdir/file.txt",
 			wantErr:  false,
 			wantPath: "/tmp/extract/dir/subdir/file.txt",
 		},
 		{
 			name:    "path traversal with dot-dot",
+			base:     "/tmp/extract",
 			entry:   "../etc/passwd",
 			wantErr: true,
 		},
 		{
 			name:    "path traversal mid-path",
+			base:     "/tmp/extract",
 			entry:   "dir/../../etc/passwd",
 			wantErr: true,
 		},
 		{
 			name:     "absolute path in entry stays within base",
+			base:     "/tmp/extract",
 			entry:    "/etc/passwd",
 			wantErr:  false,
 			wantPath: "/tmp/extract/etc/passwd",
 		},
 		{
 			name:     "base path itself",
+			base:     "/tmp/extract",
 			entry:    ".",
 			wantErr:  false,
 			wantPath: "/tmp/extract",
@@ -468,7 +480,7 @@ func TestValidatePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := validatePath(base, tt.entry)
+			got, err := validatePath(tt.base, tt.entry)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expected error for entry %q, got path %q", tt.entry, got)

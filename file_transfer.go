@@ -114,7 +114,7 @@ func (cli *Client) UploadFile(ctx context.Context, localPath, remoteDestPath str
 	// Validate that the source path exists before attempting to upload
 	if _, err := os.Lstat(localPath); err != nil {
 		if os.IsNotExist(err) {
-			return ErrFileTransfer{Message: "Source path does not exist"}
+			return ErrFileTransfer{Message: "Invalid source - path does not exist"}
 		}
 		return err
 	}
@@ -188,7 +188,7 @@ func HandleFileTransfer(ctx context.Context, stream *smux.Stream, payload []byte
 func handleDownload(stream *smux.Stream, path string) error {
 	if _, err := os.Lstat(path); err != nil {
 		if os.IsNotExist(err) {
-			return WriteError(stream, ErrFileTransfer{Message: "Source path does not exist"})
+			return WriteError(stream, ErrFileTransfer{Message: "Invalid source - path does not exist"})
 		}
 		return WriteError(stream, err)
 	}
@@ -212,13 +212,34 @@ func handleDownload(stream *smux.Stream, path string) error {
 	return gzipWriter.Close()
 }
 
-func handleUpload(stream *smux.Stream, destPath string) error {
-	if _, err := os.Stat(destPath); err != nil {
+func validateUploadDest(destPath string) error {
+	// Destination path must be absolute to prevent confusion about where files will be extracted.
+	if !filepath.IsAbs(destPath) {
+		return ErrFileTransfer{Message: "Invalid destination - path must be absolute"}
+	}
+
+	// Check whether the parent directory of the destination exists and is a directory.
+	// We can only proceed with the upload if this is true,
+	parentInfo, err := os.Stat(filepath.Dir(destPath))
+	if err != nil {
 		if os.IsNotExist(err) {
-			return WriteError(stream, ErrFileTransfer{Message: "Destination path does not exist"})
+			return ErrFileTransfer{Message: "Invalid destination - parent directory does not exist"}
 		}
 
 		return err
+	}
+
+	if !parentInfo.IsDir() {
+		return ErrFileTransfer{Message: "Invalid destination - parent not a directory"}
+	}
+
+	return nil
+
+}
+
+func handleUpload(stream *smux.Stream, destPath string) error {
+	if err := validateUploadDest(destPath); err != nil {
+		return WriteError(stream, err)
 	}
 
 	if err := WriteOK(stream, nil); err != nil {
@@ -451,12 +472,12 @@ func extractFile(tarReader *tar.Reader, targetPath string, header *tar.Header) e
 	parentDir := filepath.Dir(targetPath)
 	if parentDirInfo, err := os.Lstat(parentDir); err != nil {
 		if os.IsNotExist(err) {
-			return ErrFileTransfer{Message: "Destination directory does not exist"}
+			return ErrFileTransfer{Message: "Invalid destination - parent directory does not exist"}
 		}
 
 		return err
 	} else if !parentDirInfo.IsDir() {
-		return ErrFileTransfer{Message: "Invalid destination - not a directory"}
+		return ErrFileTransfer{Message: "Invalid destination - parent not a directory"}
 	}
 
 	f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))

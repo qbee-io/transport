@@ -212,20 +212,14 @@ func handleDownload(stream *smux.Stream, path string) error {
 	return gzipWriter.Close()
 }
 
-func validateUploadDest(destPath string) error {
-	// Destination path must be absolute to prevent confusion about where files will be extracted.
-	if !filepath.IsAbs(destPath) {
-		return ErrFileTransfer{Message: "Invalid destination - path must be absolute"}
-	}
-
-	// Check whether the parent directory of the destination exists and is a directory.
-	// We can only proceed with the upload if this is true,
-	parentInfo, err := os.Stat(filepath.Dir(destPath))
+// validateParentDir validates that the parent directory of a path exists and is a directory.
+func validateParentDir(targetPath string) error {
+	parentDir := filepath.Dir(targetPath)
+	parentInfo, err := os.Lstat(parentDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return ErrFileTransfer{Message: "Invalid destination - parent directory does not exist"}
 		}
-
 		return err
 	}
 
@@ -234,7 +228,16 @@ func validateUploadDest(destPath string) error {
 	}
 
 	return nil
+}
 
+func validateUploadDest(destPath string) error {
+	// Destination path must be absolute to prevent confusion about where files will be extracted.
+	if !filepath.IsAbs(destPath) {
+		return ErrFileTransfer{Message: "Invalid destination - path must be absolute"}
+	}
+
+	// Check whether the parent directory of the destination exists and is a directory.
+	return validateParentDir(destPath)
 }
 
 func handleUpload(stream *smux.Stream, destPath string) error {
@@ -469,15 +472,8 @@ func extractTarEntries(tarReader *tar.Reader, destPath, stripPrefix string) erro
 }
 
 func extractFile(tarReader *tar.Reader, targetPath string, header *tar.Header) error {
-	parentDir := filepath.Dir(targetPath)
-	if parentDirInfo, err := os.Lstat(parentDir); err != nil {
-		if os.IsNotExist(err) {
-			return ErrFileTransfer{Message: "Invalid destination - parent directory does not exist"}
-		}
-
+	if err := validateParentDir(targetPath); err != nil {
 		return err
-	} else if !parentDirInfo.IsDir() {
-		return ErrFileTransfer{Message: "Invalid destination - parent not a directory"}
 	}
 
 	f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))

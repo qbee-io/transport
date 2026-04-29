@@ -65,7 +65,7 @@ func TestFileTransfer_PathHandling_Download(t *testing.T) {
 			clientFS:    []string{},
 			requestPath: "/device/file.txt",
 			destPath:    "/client/sub-dir/",
-			expectError: "Destination directory does not exist",
+			expectError: "Invalid destination - parent directory does not exist",
 		},
 		{
 			name:        "download existing file to a base dir which exists but is a file not a directory",
@@ -73,7 +73,7 @@ func TestFileTransfer_PathHandling_Download(t *testing.T) {
 			clientFS:    []string{"/client"}, // note: /client is a file, not a directory
 			requestPath: "/device/file.txt",
 			destPath:    "/client/sub-dir/",
-			expectError: "Invalid destination - not a directory",
+			expectError: "Invalid destination - parent not a directory",
 		},
 		{
 			name:        "download non-existing file",
@@ -81,7 +81,7 @@ func TestFileTransfer_PathHandling_Download(t *testing.T) {
 			clientFS:    []string{"/client/"},
 			requestPath: "/device/file.txt",
 			destPath:    "/client/",
-			expectError: "Source path does not exist",
+			expectError: "Invalid source - path does not exist",
 		},
 		{
 			name:        "download a directory to an existing base dir results in a new subdir under the dest dir",
@@ -193,7 +193,7 @@ func TestFileTransfer_PathHandling_Upload(t *testing.T) {
 			deviceFS:    []string{},
 			sourcePath:  "/client/file.txt",
 			destPath:    "/nonexistent-parent/file.txt",
-			expectError: "Destination path does not exist",
+			expectError: "Invalid destination - parent directory does not exist",
 		},
 		{
 			name:       "upload to a non-existing destination - parent directory exists",
@@ -209,7 +209,7 @@ func TestFileTransfer_PathHandling_Upload(t *testing.T) {
 			deviceFS:    []string{"/device"}, // note: /device is a file, not a directory
 			sourcePath:  "/client/file.txt",
 			destPath:    "/device/file-with-another-name",
-			expectError: "Invalid destination path",
+			expectError: "Invalid destination - parent not a directory",
 		},
 		{
 			name:        "upload non-existing file",
@@ -217,7 +217,7 @@ func TestFileTransfer_PathHandling_Upload(t *testing.T) {
 			deviceFS:    []string{"/device/"},
 			sourcePath:  "/client/file.txt",
 			destPath:    "/device/",
-			expectError: "Source path does not exist",
+			expectError: "Invalid source - path does not exist",
 		},
 		{
 			name:       "upload to a file to an existing file path results in file being overwritten",

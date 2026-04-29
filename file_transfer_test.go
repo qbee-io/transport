@@ -204,6 +204,14 @@ func TestFileTransfer_PathHandling_Upload(t *testing.T) {
 			expectedFS: []string{"/device/file-with-another-name"},
 		},
 		{
+			name:        "upload to a non-existing destination - parent path is a file",
+			clientFS:    []string{"/client/", "/client/file.txt"},
+			deviceFS:    []string{"/device"}, // note: /device is a file, not a directory
+			sourcePath:  "/client/file.txt",
+			destPath:    "/device/file-with-another-name",
+			expectError: "Invalid destination - not a directory",
+		},
+		{
 			name:        "upload non-existing file",
 			clientFS:    []string{"/client/"},
 			deviceFS:    []string{"/device/"},

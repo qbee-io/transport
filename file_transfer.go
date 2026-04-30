@@ -33,6 +33,22 @@ import (
 // FileTransferDirection defines the direction of a file transfer.
 type FileTransferDirection uint8
 
+// ErrFileTransfer represents an error that occurred during file transfer operations.
+type ErrFileTransfer struct {
+	Message string
+}
+
+// Error implements the error interface for ErrFileTransfer.
+func (e ErrFileTransfer) Error() string {
+	return e.Message
+}
+
+func fileTransferErrorfromRemoteError(err error) error {
+	return ErrFileTransfer{
+		Message: strings.TrimPrefix(err.Error(), "error reading message: remote error: "),
+	}
+}
+
 const (
 	// FileTransferDownload transfers files from device to client.
 	FileTransferDownload FileTransferDirection = 0
@@ -68,7 +84,7 @@ func (cli *Client) DownloadFile(ctx context.Context, remotePath, localDestPath s
 
 	stream, err := cli.OpenStream(ctx, MessageTypeFile, payload)
 	if err != nil {
-		return err
+		return fileTransferErrorfromRemoteError(err)
 	}
 	defer func() {
 		_ = stream.Close()
@@ -95,6 +111,14 @@ func (cli *Client) DownloadFile(ctx context.Context, remotePath, localDestPath s
 // localPath is the local file or directory to archive and send.
 // remoteDestPath must be an absolute path on the device where files will be extracted.
 func (cli *Client) UploadFile(ctx context.Context, localPath, remoteDestPath string) error {
+	// Validate that the source path exists before attempting to upload
+	if _, err := os.Lstat(localPath); err != nil {
+		if os.IsNotExist(err) {
+			return ErrFileTransfer{Message: "Invalid source - path does not exist"}
+		}
+		return err
+	}
+
 	req := FileTransferRequest{
 		Direction: FileTransferUpload,
 		Path:      remoteDestPath,
@@ -107,7 +131,7 @@ func (cli *Client) UploadFile(ctx context.Context, localPath, remoteDestPath str
 
 	stream, err := cli.OpenStream(ctx, MessageTypeFile, payload)
 	if err != nil {
-		return err
+		return fileTransferErrorfromRemoteError(err)
 	}
 	defer func() {
 		_ = stream.Close()
@@ -163,6 +187,9 @@ func HandleFileTransfer(ctx context.Context, stream *smux.Stream, payload []byte
 
 func handleDownload(stream *smux.Stream, path string) error {
 	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return WriteError(stream, ErrFileTransfer{Message: "Invalid source - path does not exist"})
+		}
 		return WriteError(stream, err)
 	}
 
@@ -185,17 +212,40 @@ func handleDownload(stream *smux.Stream, path string) error {
 	return gzipWriter.Close()
 }
 
-func handleUpload(stream *smux.Stream, destPath string) error {
-	info, err := os.Stat(destPath)
+// validateParentDir validates that the parent directory of a path exists and is a directory.
+func validateParentDir(targetPath string) error {
+	parentDir := filepath.Dir(targetPath)
+	parentInfo, err := os.Lstat(parentDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrFileTransfer{Message: "Invalid destination - parent directory does not exist"}
+		}
+		return err
+	}
+
+	if !parentInfo.IsDir() {
+		return ErrFileTransfer{Message: "Invalid destination - parent not a directory"}
+	}
+
+	return nil
+}
+
+func validateUploadDest(destPath string) error {
+	// Destination path must be absolute to prevent confusion about where files will be extracted.
+	if !filepath.IsAbs(destPath) {
+		return ErrFileTransfer{Message: "Invalid destination - path must be absolute"}
+	}
+
+	// Check whether the parent directory of the destination exists and is a directory.
+	return validateParentDir(destPath)
+}
+
+func handleUpload(stream *smux.Stream, destPath string) error {
+	if err := validateUploadDest(destPath); err != nil {
 		return WriteError(stream, err)
 	}
 
-	if !info.IsDir() {
-		return WriteError(stream, fmt.Errorf("upload destination must be a directory"))
-	}
-
-	if err = WriteOK(stream, nil); err != nil {
+	if err := WriteOK(stream, nil); err != nil {
 		return err
 	}
 
@@ -328,9 +378,51 @@ func archiveSymlink(tarWriter *tar.Writer, basePath, absPath, relPath string) er
 // extractTar reads a tar archive and extracts its contents to destPath.
 // All paths are validated to prevent directory traversal attacks.
 // Symlinks with targets outside destPath are rejected.
+//
+// For directories: creates destPath if needed and extracts contents.
+// For single files: destPath can be an existing directory (extract file there),
+// an existing file (overwrite), or a new file path (parent directory must exist).
 func extractTar(tarReader *tar.Reader, destPath string) error {
 	destPath = filepath.Clean(destPath)
 
+	// If destPath already exists as a directory, extract normally.
+	if info, err := os.Stat(destPath); err == nil && info.IsDir() {
+		return extractTarEntries(tarReader, destPath, "")
+	}
+
+	// destPath does not exist (or is not a directory). Peek at the first archive entry to
+	// determine the source type and decide how to handle the destination.
+	header, err := tarReader.Next()
+	if err == io.EOF {
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("error reading tar: %w", err)
+	}
+
+	switch header.Typeflag {
+	case tar.TypeDir:
+		// Source is a directory. Create destPath and extract its contents with the
+		// top-level directory name stripped so files land directly inside destPath.
+		if err = os.MkdirAll(destPath, os.FileMode(header.Mode)); err != nil {
+			return fmt.Errorf("error creating directory %s: %w", destPath, err)
+		}
+
+		return extractTarEntries(tarReader, destPath, header.Name)
+
+	case tar.TypeReg:
+		return extractFile(tarReader, destPath, header)
+
+	default:
+		return ErrFileTransfer{Message: "Transfer of this file type is not supported"}
+	}
+}
+
+// extractTarEntries extracts tar entries into destPath, optionally stripping a prefix from each entry name.
+// If stripPrefix is non-empty, it will be removed from the beginning of each entry name, and entries
+// that are empty after stripping will be skipped (useful when extracting a directory's contents into a new location).
+func extractTarEntries(tarReader *tar.Reader, destPath, stripPrefix string) error {
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -341,7 +433,17 @@ func extractTar(tarReader *tar.Reader, destPath string) error {
 			return fmt.Errorf("error reading tar: %w", err)
 		}
 
-		targetPath, err := validatePath(destPath, header.Name)
+		// If a prefix should be stripped, do that and skip empty entries
+		entryName := header.Name
+		if stripPrefix != "" {
+			entryName = strings.TrimPrefix(header.Name, stripPrefix)
+			if entryName == "" {
+				// Entry is the top-level directory itself – already created, skip.
+				continue
+			}
+		}
+
+		targetPath, err := validatePath(destPath, entryName)
 		if err != nil {
 			return err
 		}
@@ -370,8 +472,8 @@ func extractTar(tarReader *tar.Reader, destPath string) error {
 }
 
 func extractFile(tarReader *tar.Reader, targetPath string, header *tar.Header) error {
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		return fmt.Errorf("error creating parent directory for %s: %w", targetPath, err)
+	if err := validateParentDir(targetPath); err != nil {
+		return err
 	}
 
 	f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
@@ -413,6 +515,10 @@ func validatePath(basePath, entryName string) (string, error) {
 
 	// The path must be the base itself or a child of it.
 	if cleanPath == cleanBase {
+		return cleanPath, nil
+	}
+
+	if cleanBase == "/" {
 		return cleanPath, nil
 	}
 

@@ -24,6 +24,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,6 +32,262 @@ import (
 
 	"github.com/xtaci/smux"
 )
+
+func TestFileTransfer_PathHandling_Download(t *testing.T) {
+	testCases := []struct {
+		name        string   // descriptive name of the test case
+		deviceFS    []string // list of file paths, directories end with "/"
+		clientFS    []string // initial file paths on client before transfer, directories end with "/"
+		requestPath string   // path requested for transfer
+		destPath    string   // destination path on client
+		expectedFS  []string // expected file paths on client after transfer
+		expectError string   // expected error message in ErrFileTransfer, empty if no error expected
+	}{
+		{
+			name:        "download existing file to an existing base dir",
+			deviceFS:    []string{"/device/", "/device/file.txt"},
+			clientFS:    []string{"/client/"},
+			requestPath: "/device/file.txt",
+			destPath:    "/client/",
+			expectedFS:  []string{"/client/file.txt"},
+		},
+		{
+			name:        "download existing file to an existing base dir with different filename",
+			deviceFS:    []string{"/device/", "/device/file.txt"},
+			clientFS:    []string{"/client/"},
+			requestPath: "/device/file.txt",
+			destPath:    "/client/file2.txt",
+			expectedFS:  []string{"/client/file2.txt"},
+		},
+		{
+			name:        "download existing file to a non-existing base dir",
+			deviceFS:    []string{"/device/", "/device/file.txt"},
+			clientFS:    []string{},
+			requestPath: "/device/file.txt",
+			destPath:    "/client/sub-dir/",
+			expectError: "Invalid destination - parent directory does not exist",
+		},
+		{
+			name:        "download existing file to a base dir which exists but is a file not a directory",
+			deviceFS:    []string{"/device/", "/device/file.txt"},
+			clientFS:    []string{"/client"}, // note: /client is a file, not a directory
+			requestPath: "/device/file.txt",
+			destPath:    "/client/sub-dir/",
+			expectError: "Invalid destination - parent not a directory",
+		},
+		{
+			name:        "download non-existing file",
+			deviceFS:    []string{"/device/"},
+			clientFS:    []string{"/client/"},
+			requestPath: "/device/file.txt",
+			destPath:    "/client/",
+			expectError: "Invalid source - path does not exist",
+		},
+		{
+			name:        "download a directory to an existing base dir results in a new subdir under the dest dir",
+			deviceFS:    []string{"/device/", "/device/dir/", "/device/dir/file1.txt", "/device/dir/file2.txt"},
+			clientFS:    []string{"/client/"},
+			requestPath: "/device/dir/",
+			destPath:    "/client/",
+			expectedFS:  []string{"/client/dir/file1.txt", "/client/dir/file2.txt"},
+		},
+		{
+			name:        "download a directory to non existing base dir results in copying the content of the directory to the destination directory",
+			deviceFS:    []string{"/device/", "/device/dir/", "/device/dir/file1.txt", "/device/dir/file2.txt"},
+			clientFS:    []string{"/"},
+			requestPath: "/device/dir/",
+			destPath:    "/client/",
+			expectedFS:  []string{"/client/file1.txt", "/client/file2.txt"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, deviceClient, _ := NewEdgeMock(t)
+			deviceClient.WithHandler(MessageTypeFile, HandleFileTransfer)
+			ctx := t.Context()
+			deviceDir := t.TempDir()
+			clientDir := t.TempDir()
+
+			// Setup device filesystem
+			for _, path := range tc.deviceFS {
+				if path[len(path)-1] == '/' {
+					if err := os.MkdirAll(filepath.Join(deviceDir, path), 0755); err != nil {
+						t.Fatalf("failed to create device dir %s: %v", path, err)
+					}
+				} else {
+					if err := os.WriteFile(filepath.Join(deviceDir, path), []byte("data"), 0644); err != nil {
+						t.Fatalf("failed to create device file %s: %v", path, err)
+					}
+				}
+			}
+
+			// Setup client filesystem
+			for _, path := range tc.clientFS {
+				if path[len(path)-1] == '/' {
+					if err := os.MkdirAll(filepath.Join(clientDir, path), 0755); err != nil {
+						t.Fatalf("failed to create client dir %s: %v", path, err)
+					}
+				} else {
+					if err := os.WriteFile(filepath.Join(clientDir, path), []byte("data"), 0644); err != nil {
+						t.Fatalf("failed to create client file %s: %v", path, err)
+					}
+				}
+			}
+
+			// Perform the file transfer
+			requestedPath := filepath.Join(deviceDir, tc.requestPath)
+			destPath := filepath.Join(clientDir, tc.destPath)
+			err := client.DownloadFile(ctx, requestedPath, destPath)
+			if tc.expectError != "" {
+				var fileErr ErrFileTransfer
+				if !errors.As(err, &fileErr) || fileErr.Message != tc.expectError {
+					t.Errorf("expected error %q, got %v", tc.expectError, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Verify expected filesystem state on client
+			for _, expectedPath := range tc.expectedFS {
+				if _, err := os.Stat(filepath.Join(clientDir, expectedPath)); os.IsNotExist(err) {
+					t.Errorf("expected file %s does not exist on client", expectedPath)
+				}
+			}
+		})
+	}
+}
+
+func TestFileTransfer_PathHandling_Upload(t *testing.T) {
+	testCases := []struct {
+		name        string   // descriptive name of the test case
+		clientFS    []string // list of file paths on client, directories end with "/"
+		deviceFS    []string // initial file paths on device before transfer
+		sourcePath  string   // path to upload from client
+		destPath    string   // destination path on device
+		expectedFS  []string // expected file paths on device after transfer
+		expectError string   // expected error message in ErrFileTransfer, empty if no error expected
+	}{
+		{
+			name:       "upload existing file to an existing directory",
+			clientFS:   []string{"/client/", "/client/file.txt"},
+			deviceFS:   []string{"/device/"},
+			sourcePath: "/client/file.txt",
+			destPath:   "/device/",
+			expectedFS: []string{"/device/file.txt"},
+		},
+		{
+			name:       "upload existing directory to an existing directory",
+			clientFS:   []string{"/client/", "/client/myapp/", "/client/myapp/file1.txt", "/client/myapp/file2.txt"},
+			deviceFS:   []string{"/device/"},
+			sourcePath: "/client/myapp/",
+			destPath:   "/device/",
+			expectedFS: []string{"/device/myapp/file1.txt", "/device/myapp/file2.txt"},
+		},
+		{
+			name:        "upload to a non-existing destination - parent directory does not exist",
+			clientFS:    []string{"/client/", "/client/file.txt"},
+			deviceFS:    []string{},
+			sourcePath:  "/client/file.txt",
+			destPath:    "/nonexistent-parent/file.txt",
+			expectError: "Invalid destination - parent directory does not exist",
+		},
+		{
+			name:       "upload to a non-existing destination - parent directory exists",
+			clientFS:   []string{"/client/", "/client/file.txt"},
+			deviceFS:   []string{"/device/"},
+			sourcePath: "/client/file.txt",
+			destPath:   "/device/file-with-another-name",
+			expectedFS: []string{"/device/file-with-another-name"},
+		},
+		{
+			name:        "upload to a non-existing destination - parent path is a file",
+			clientFS:    []string{"/client/", "/client/file.txt"},
+			deviceFS:    []string{"/device"}, // note: /device is a file, not a directory
+			sourcePath:  "/client/file.txt",
+			destPath:    "/device/file-with-another-name",
+			expectError: "Invalid destination - parent not a directory",
+		},
+		{
+			name:        "upload non-existing file",
+			clientFS:    []string{"/client/"},
+			deviceFS:    []string{"/device/"},
+			sourcePath:  "/client/file.txt",
+			destPath:    "/device/",
+			expectError: "Invalid source - path does not exist",
+		},
+		{
+			name:       "upload to a file to an existing file path results in file being overwritten",
+			clientFS:   []string{"/client/", "/client/file.txt"},
+			deviceFS:   []string{"/device/", "/device/not_a_dir"},
+			sourcePath: "/client/file.txt",
+			destPath:   "/device/not_a_dir",
+			expectedFS: []string{"/device/", "/device/not_a_dir"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, deviceClient, _ := NewEdgeMock(t)
+			deviceClient.WithHandler(MessageTypeFile, HandleFileTransfer)
+			ctx := t.Context()
+			clientDir := t.TempDir()
+			deviceDir := t.TempDir()
+
+			// Setup client filesystem
+			for _, path := range tc.clientFS {
+				if path[len(path)-1] == '/' {
+					if err := os.MkdirAll(filepath.Join(clientDir, path), 0755); err != nil {
+						t.Fatalf("failed to create client dir %s: %v", path, err)
+					}
+				} else {
+					if err := os.WriteFile(filepath.Join(clientDir, path), []byte("data"), 0644); err != nil {
+						t.Fatalf("failed to create client file %s: %v", path, err)
+					}
+				}
+			}
+
+			// Setup device filesystem
+			for _, path := range tc.deviceFS {
+				if path[len(path)-1] == '/' {
+					if err := os.MkdirAll(filepath.Join(deviceDir, path), 0755); err != nil {
+						t.Fatalf("failed to create device dir %s: %v", path, err)
+					}
+				} else {
+					if err := os.WriteFile(filepath.Join(deviceDir, path), []byte("data"), 0644); err != nil {
+						t.Fatalf("failed to create device file %s: %v", path, err)
+					}
+				}
+			}
+
+			// Perform the file transfer
+			sourcePath := filepath.Join(clientDir, tc.sourcePath)
+			destPath := filepath.Join(deviceDir, tc.destPath)
+			err := client.UploadFile(ctx, sourcePath, destPath)
+			if tc.expectError != "" {
+				var fileErr ErrFileTransfer
+				if !errors.As(err, &fileErr) || fileErr.Message != tc.expectError {
+					t.Errorf("expected error %q, got %v", tc.expectError, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Verify expected filesystem state on device
+			for _, expectedPath := range tc.expectedFS {
+				if _, err := os.Stat(filepath.Join(deviceDir, expectedPath)); os.IsNotExist(err) {
+					t.Errorf("expected file %s does not exist on device", expectedPath)
+				}
+			}
+		})
+	}
+}
 
 func TestFileTransfer_DownloadSingleFile(t *testing.T) {
 	client, deviceClient, _ := NewEdgeMock(t)
@@ -82,10 +339,10 @@ func TestFileTransfer_DownloadDirectory(t *testing.T) {
 	}
 
 	files := map[string][]byte{
-		filepath.Join(tree, "README.md"):                []byte("# Project"),
-		filepath.Join(tree, "src", "main.go"):           []byte("package main"),
-		filepath.Join(tree, "src", "nested", "lib.go"):  []byte("package nested"),
-		filepath.Join(tree, "docs", "guide.txt"):        []byte("usage guide"),
+		filepath.Join(tree, "README.md"):               []byte("# Project"),
+		filepath.Join(tree, "src", "main.go"):          []byte("package main"),
+		filepath.Join(tree, "src", "nested", "lib.go"): []byte("package nested"),
+		filepath.Join(tree, "docs", "guide.txt"):       []byte("usage guide"),
 	}
 	for path, content := range files {
 		if err := os.WriteFile(path, content, 0644); err != nil {
@@ -164,7 +421,7 @@ func TestFileTransfer_UploadDirectory(t *testing.T) {
 	files := map[string][]byte{
 		filepath.Join(tree, "bin", "app"):            []byte("binary content"),
 		filepath.Join(tree, "config", "app.yaml"):    []byte("key: value"),
-		filepath.Join(tree, "config", "secrets.env"):  []byte("SECRET=abc"),
+		filepath.Join(tree, "config", "secrets.env"): []byte("SECRET=abc"),
 	}
 	for path, content := range files {
 		if err := os.WriteFile(path, content, 0644); err != nil {
@@ -227,11 +484,12 @@ func TestFileTransfer_UploadToFilePath(t *testing.T) {
 
 	// Create a source file.
 	clientDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(clientDir, "test.txt"), []byte("data"), 0644); err != nil {
+	sourceContent := []byte("new data")
+	if err := os.WriteFile(filepath.Join(clientDir, "test.txt"), sourceContent, 0644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	// Try to upload to a file (not a directory).
+	// Upload to a file (not a directory) - should overwrite the existing file.
 	deviceDir := t.TempDir()
 	deviceFile := filepath.Join(deviceDir, "not_a_dir")
 	if err := os.WriteFile(deviceFile, []byte("existing"), 0644); err != nil {
@@ -239,8 +497,18 @@ func TestFileTransfer_UploadToFilePath(t *testing.T) {
 	}
 
 	err := client.UploadFile(ctx, filepath.Join(clientDir, "test.txt"), deviceFile)
-	if err == nil {
-		t.Fatal("expected error when uploading to a file path, got nil")
+	if err != nil {
+		t.Fatalf("unexpected error when uploading to a file path: %v", err)
+	}
+
+	// Verify the file was overwritten with the new content.
+	got, err := os.ReadFile(deviceFile)
+	if err != nil {
+		t.Fatalf("failed to read uploaded file: %v", err)
+	}
+
+	if !bytes.Equal(got, sourceContent) {
+		t.Fatalf("file content mismatch: got %q, want %q", got, sourceContent)
 	}
 }
 
@@ -422,44 +690,56 @@ func TestFileTransfer_SymlinkEscapingSkipped(t *testing.T) {
 }
 
 func TestValidatePath(t *testing.T) {
-	base := "/tmp/extract"
-
 	tests := []struct {
 		name     string
+		base     string
 		entry    string
 		wantErr  bool
 		wantPath string
 	}{
 		{
 			name:     "simple file",
+			base:     "/tmp/extract",
 			entry:    "file.txt",
 			wantErr:  false,
 			wantPath: "/tmp/extract/file.txt",
 		},
 		{
+			name:     "root base",
+			base:     "/",
+			entry:    "file.txt",
+			wantErr:  false,
+			wantPath: "/file.txt",
+		},
+		{
 			name:     "nested file",
+			base:     "/tmp/extract",
 			entry:    "dir/subdir/file.txt",
 			wantErr:  false,
 			wantPath: "/tmp/extract/dir/subdir/file.txt",
 		},
 		{
 			name:    "path traversal with dot-dot",
+			base:    "/tmp/extract",
 			entry:   "../etc/passwd",
 			wantErr: true,
 		},
 		{
 			name:    "path traversal mid-path",
+			base:    "/tmp/extract",
 			entry:   "dir/../../etc/passwd",
 			wantErr: true,
 		},
 		{
 			name:     "absolute path in entry stays within base",
+			base:     "/tmp/extract",
 			entry:    "/etc/passwd",
 			wantErr:  false,
 			wantPath: "/tmp/extract/etc/passwd",
 		},
 		{
 			name:     "base path itself",
+			base:     "/tmp/extract",
 			entry:    ".",
 			wantErr:  false,
 			wantPath: "/tmp/extract",
@@ -468,7 +748,7 @@ func TestValidatePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := validatePath(base, tt.entry)
+			got, err := validatePath(tt.base, tt.entry)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expected error for entry %q, got path %q", tt.entry, got)

@@ -476,7 +476,12 @@ func extractFile(tarReader *tar.Reader, targetPath string, header *tar.Header) e
 		return err
 	}
 
-	f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+	// Always remove existing file/symlink at target path before creating new file to prevent abuse of hard links in the archive.
+	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("error removing existing entry %s: %w", targetPath, err)
+	}
+
+	f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
 	if err != nil {
 		return fmt.Errorf("error creating file %s: %w", targetPath, err)
 	}

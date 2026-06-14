@@ -890,3 +890,119 @@ func TestValidateSymlink(t *testing.T) {
 		})
 	}
 }
+
+// TestExtractTar_SymlinkTraversalEscape reproduces a path-traversal vulnerability
+// in extractTar: validateSymlink and validatePath are purely lexical, but
+// extractFile opens regular files with O_CREATE|O_WRONLY|O_TRUNC and no
+// O_NOFOLLOW. A crafted tar containing
+//
+//  1. a self-referential symlink   "d"    -> "."
+//  2. a traversing symlink         "evil" -> "d/../pwn"
+//  3. a regular file               "evil" with attacker-controlled contents
+//
+// passes every lexical check (filepath.Clean strips "d/.." textually so the
+// resolved target appears to be inside destPath), but on disk the kernel
+// follows the planted "d" symlink in step 3 and the truncate/write lands in
+// the *parent* directory of destPath.
+func TestExtractTar_SymlinkTraversalEscape(t *testing.T) {
+	// Use a dedicated parent so we can detect a file written one level above
+	// the extraction destination. t.TempDir() cleans this whole tree up.
+	parent := t.TempDir()
+	destPath := filepath.Join(parent, "dest")
+	if err := os.Mkdir(destPath, 0o755); err != nil {
+		t.Fatalf("failed to create destPath: %v", err)
+	}
+
+	// Sentinel that must NOT be overwritten. It lives in the parent dir,
+	// i.e. one level above destPath – the exact location the attack aims for.
+	sentinelPath := filepath.Join(parent, "pwn")
+	const originalContent = "original-untouched"
+	if err := os.WriteFile(sentinelPath, []byte(originalContent), 0o600); err != nil {
+		t.Fatalf("failed to seed sentinel file: %v", err)
+	}
+
+	// Build the malicious tar in memory.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	// 1. d -> "."  (self-reference; lexically resolves to destPath, allowed)
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "d",
+		Linkname: ".",
+		Mode:     0o777,
+	}); err != nil {
+		t.Fatalf("write header d: %v", err)
+	}
+
+	// 2. evil -> "d/../pwn"
+	//    validateSymlink computes Clean(destPath + "/" + "d/../pwn") = destPath/pwn,
+	//    which lexically lives inside destPath, so the check passes.
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "evil",
+		Linkname: "d/../pwn",
+		Mode:     0o777,
+	}); err != nil {
+		t.Fatalf("write header evil symlink: %v", err)
+	}
+
+	// 3. Regular file "evil". validatePath returns destPath/evil (allowed),
+	//    extractFile then OpenFile's it without O_NOFOLLOW, follows the planted
+	//    symlink, and the kernel resolves d/../pwn outside destPath.
+	pwned := []byte("PWNED-by-traversal")
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeReg,
+		Name:     "evil",
+		Mode:     0o644,
+		Size:     int64(len(pwned)),
+	}); err != nil {
+		t.Fatalf("write header evil regular: %v", err)
+	}
+	if _, err := tw.Write(pwned); err != nil {
+		t.Fatalf("write evil body: %v", err)
+	}
+
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+
+	// Drive the actual library entry point used on the device side.
+	tr := tar.NewReader(&buf)
+	if err := extractTar(tr, destPath); err != nil {
+		// An error here would actually be the *secure* outcome – the library
+		// should refuse the archive. We tolerate it and let the post-conditions
+		// below decide whether the attack succeeded.
+		t.Logf("extractTar returned error (acceptable if no escape occurred): %v", err)
+	}
+
+	// --- Post-conditions: the attack must NOT have escaped destPath. ---
+
+	// The sentinel file in the parent directory must still hold its original
+	// contents. If it now contains the attacker payload, the kernel followed
+	// the planted symlink and the write landed outside destPath.
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("sentinel file unexpectedly missing: %v", err)
+	}
+	if string(got) != originalContent {
+		t.Fatalf(
+			"path traversal: file at %s (parent of destPath) was overwritten;\n"+
+				"  want %q\n  got  %q",
+			sentinelPath, originalContent, string(got),
+		)
+	}
+
+	// Nothing should ever have been created outside destPath as a side effect.
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatalf("read parent dir: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name == "dest" || name == "pwn" {
+			continue
+		}
+		t.Errorf("unexpected entry created outside destPath: %s", name)
+	}
+}

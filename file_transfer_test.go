@@ -1006,3 +1006,116 @@ func TestExtractTar_SymlinkTraversalEscape(t *testing.T) {
 		t.Errorf("unexpected entry created outside destPath: %s", name)
 	}
 }
+
+// TestExtractTar_IntermediateSymlinkTraversalEscape reproduces the incomplete-fix
+// bypass of GHSA-f9m7-vc86-p6jj / CVE-2026-55828. The v1.26.25 patch blocks the
+// final-symlink overwrite variant (covered by TestExtractTar_SymlinkTraversalEscape),
+// but validatePath/validateSymlink are still purely lexical while os.MkdirAll and
+// os.OpenFile follow symlink path *components* during real resolution.
+//
+// A crafted tar uses an intermediate symlink directory component:
+//
+//	d    -> .            (self-reference; lexically resolves to dest, allowed)
+//	evil -> d/..         (lexically Clean(dest/d/..) == dest, allowed)
+//	evil/outside-dir/    (MkdirAll follows evil -> ../outside-dir = parent of dest)
+//	evil/outside-dir/payload.txt (written outside dest)
+//
+// Chaining d before .. escapes multiple levels: "d/d/../.." escapes two levels.
+func TestExtractTar_IntermediateSymlinkTraversalEscape(t *testing.T) {
+	testCases := []struct {
+		name           string
+		linkTarget     string
+		escapedBaseDir func(root, parent string) string
+	}{
+		{
+			name:       "one parent level",
+			linkTarget: "d/..",
+			escapedBaseDir: func(root, parent string) string {
+				return parent
+			},
+		},
+		{
+			name:       "two parent levels",
+			linkTarget: "d/d/../..",
+			escapedBaseDir: func(root, parent string) string {
+				return root
+			},
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			parent := filepath.Join(root, "parent")
+			destPath := filepath.Join(parent, "dest")
+			if err := os.MkdirAll(destPath, 0o755); err != nil {
+				t.Fatalf("failed to create destPath: %v", err)
+			}
+
+			escapedPayloadPath := filepath.Join(tt.escapedBaseDir(root, parent), "outside-dir", "payload.txt")
+			payload := []byte("PWNED-intermediate-symlink")
+
+			var buf bytes.Buffer
+			tw := tar.NewWriter(&buf)
+
+			if err := tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeSymlink,
+				Name:     "d",
+				Linkname: ".",
+				Mode:     0o777,
+			}); err != nil {
+				t.Fatalf("write header d: %v", err)
+			}
+
+			if err := tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeSymlink,
+				Name:     "evil",
+				Linkname: tt.linkTarget,
+				Mode:     0o777,
+			}); err != nil {
+				t.Fatalf("write header evil symlink: %v", err)
+			}
+
+			if err := tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeDir,
+				Name:     "evil/outside-dir/",
+				Mode:     0o755,
+			}); err != nil {
+				t.Fatalf("write header outside-dir: %v", err)
+			}
+
+			if err := tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeReg,
+				Name:     "evil/outside-dir/payload.txt",
+				Mode:     0o644,
+				Size:     int64(len(payload)),
+			}); err != nil {
+				t.Fatalf("write header payload: %v", err)
+			}
+			if _, err := tw.Write(payload); err != nil {
+				t.Fatalf("write payload body: %v", err)
+			}
+
+			if err := tw.Close(); err != nil {
+				t.Fatalf("close tar: %v", err)
+			}
+
+			err := extractTar(tar.NewReader(&buf), destPath)
+			if err == nil {
+				t.Errorf("expected extractTar to reject intermediate symlink traversal archive")
+			}
+
+			got, readErr := os.ReadFile(escapedPayloadPath)
+			if readErr == nil {
+				t.Fatalf(
+					"path traversal: payload was written outside destPath at %s; got %q",
+					escapedPayloadPath,
+					string(got),
+				)
+			}
+			if !os.IsNotExist(readErr) {
+				t.Fatalf("unexpected error checking escaped payload %s: %v", escapedPayloadPath, readErr)
+			}
+		})
+	}
+}

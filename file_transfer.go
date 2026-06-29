@@ -412,17 +412,27 @@ func extractTar(tarReader *tar.Reader, destPath string) error {
 		return extractTarEntries(tarReader, destPath, header.Name)
 
 	case tar.TypeReg:
-		return extractFile(tarReader, destPath, header)
+		return extractSingleFile(tarReader, destPath, header)
 
 	default:
 		return ErrFileTransfer{Message: "Transfer of this file type is not supported"}
 	}
 }
 
-// extractTarEntries extracts tar entries into destPath, optionally stripping a prefix from each entry name.
-// If stripPrefix is non-empty, it will be removed from the beginning of each entry name, and entries
-// that are empty after stripping will be skipped (useful when extracting a directory's contents into a new location).
+// extractTarEntries extracts tar entries into destPath, optionally stripping a prefix from each
+// entry name. All filesystem operations are performed relative to an os.Root anchored at destPath so
+// that intermediate symlink path components cannot be followed outside the destination: the kernel
+// (via openat2/O_NOFOLLOW semantics) refuses to traverse any symlink that points outside the root.
+// This prevents the symlink-chain traversal bypass where lexical validation alone is insufficient.
 func extractTarEntries(tarReader *tar.Reader, destPath, stripPrefix string) error {
+	root, err := os.OpenRoot(destPath)
+	if err != nil {
+		return fmt.Errorf("error opening destination root %s: %w", destPath, err)
+	}
+	defer func() {
+		_ = root.Close()
+	}()
+
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -443,24 +453,27 @@ func extractTarEntries(tarReader *tar.Reader, destPath, stripPrefix string) erro
 			}
 		}
 
-		targetPath, err := validatePath(destPath, entryName)
-		if err != nil {
+		// Lexical validation as defense-in-depth; root-relative ops below enforce confinement.
+		if _, err = validatePath(destPath, entryName); err != nil {
 			return err
 		}
 
+		// Path relative to the root; the root rejects any escape (symlink or "..").
+		relPath := filepath.FromSlash(strings.TrimPrefix(filepath.ToSlash(entryName), "/"))
+
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err = os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
-				return fmt.Errorf("error creating directory %s: %w", targetPath, err)
+			if err = mkdirAllRooted(root, relPath, os.FileMode(header.Mode)); err != nil {
+				return fmt.Errorf("error creating directory %s: %w", relPath, err)
 			}
 
 		case tar.TypeReg:
-			if err = extractFile(tarReader, targetPath, header); err != nil {
+			if err = extractFile(root, relPath, tarReader, header); err != nil {
 				return err
 			}
 
 		case tar.TypeSymlink:
-			if err = extractSymlink(destPath, targetPath, header); err != nil {
+			if err = extractSymlink(destPath, root, relPath, header); err != nil {
 				return err
 			}
 
@@ -471,41 +484,83 @@ func extractTarEntries(tarReader *tar.Reader, destPath, stripPrefix string) erro
 	}
 }
 
-func extractFile(tarReader *tar.Reader, targetPath string, header *tar.Header) error {
-	if err := validateParentDir(targetPath); err != nil {
-		return err
-	}
-
+func extractFile(root *os.Root, relPath string, tarReader *tar.Reader, header *tar.Header) error {
 	// Always remove existing file/symlink at target path before creating new file to prevent abuse of hard links in the archive.
-	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("error removing existing entry %s: %w", targetPath, err)
+	if err := root.Remove(relPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("error removing existing entry %s: %w", relPath, err)
 	}
 
-	f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+	f, err := root.OpenFile(relPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
 	if err != nil {
-		return fmt.Errorf("error creating file %s: %w", targetPath, err)
+		return fmt.Errorf("error creating file %s: %w", relPath, err)
 	}
 	defer func() {
 		_ = f.Close()
 	}()
 
 	if _, err = io.Copy(f, io.LimitReader(tarReader, header.Size)); err != nil {
-		return fmt.Errorf("error extracting file %s: %w", targetPath, err)
+		return fmt.Errorf("error extracting file %s: %w", relPath, err)
 	}
 
 	return nil
 }
 
-func extractSymlink(destPath, targetPath string, header *tar.Header) error {
+// extractSingleFile extracts a single regular tar entry to destPath, which is a full file path whose
+// parent directory must already exist. Operations are confined to the parent via os.Root.
+func extractSingleFile(tarReader *tar.Reader, destPath string, header *tar.Header) error {
+	if err := validateParentDir(destPath); err != nil {
+		return err
+	}
+
+	root, err := os.OpenRoot(filepath.Dir(destPath))
+	if err != nil {
+		return fmt.Errorf("error opening destination root %s: %w", filepath.Dir(destPath), err)
+	}
+	defer func() {
+		_ = root.Close()
+	}()
+
+	return extractFile(root, filepath.Base(destPath), tarReader, header)
+}
+
+func extractSymlink(destPath string, root *os.Root, relPath string, header *tar.Header) error {
+	targetPath := filepath.Join(destPath, relPath)
 	if err := validateSymlink(destPath, header.Linkname, targetPath); err != nil {
 		return err
 	}
 
 	// Remove existing file/symlink at target path before creating new symlink.
-	_ = os.Remove(targetPath)
+	_ = root.Remove(relPath)
 
+	// The parent components were created through the root, so they are genuine
+	// directories (not attacker-planted symlinks); creating the link does not follow
+	// any path component and the validated target stays within destPath.
 	if err := os.Symlink(header.Linkname, targetPath); err != nil {
-		return fmt.Errorf("error creating symlink %s: %w", targetPath, err)
+		return fmt.Errorf("error creating symlink %s: %w", relPath, err)
+	}
+
+	return nil
+}
+
+// mkdirAllRooted creates relPath and any missing parents relative to root. Each component is created
+// individually so the root can reject traversal through a symlink that escapes the destination.
+func mkdirAllRooted(root *os.Root, relPath string, mode os.FileMode) error {
+	relPath = filepath.Clean(relPath)
+
+	if relPath == "." || relPath == string(filepath.Separator) {
+		return nil
+	}
+
+	var current string
+	for _, part := range filepath.SplitList(relPath) {
+		if part == "" {
+			continue
+		}
+
+		current = filepath.Join(current, part)
+		if err := root.Mkdir(current, mode); err != nil && !os.IsExist(err) {
+			return err
+		}
 	}
 
 	return nil

@@ -275,7 +275,7 @@ func handleUpload(stream *smux.Stream, destPath string) error {
 // For a single file, the archive contains one entry with the file's base name.
 // For a directory, the archive contains the directory and all its contents,
 // preserving the top-level directory name.
-// Symlinks are silently skipped.
+// Symlinks are silently skipped to avoid potential security issues.
 func archivePath(tarWriter *tar.Writer, basePath string) error {
 	basePath = filepath.Clean(basePath)
 
@@ -349,6 +349,7 @@ func archiveFile(tarWriter *tar.Writer, absPath, relPath string, info os.FileInf
 // For directories: creates destPath if needed and extracts contents.
 // For single files: destPath can be an existing directory (extract file there),
 // an existing file (overwrite), or a new file path (parent directory must exist).
+// Symlinks are silently skipped to avoid potential security issues.
 func extractTar(tarReader *tar.Reader, destPath string) error {
 	destPath = filepath.Clean(destPath)
 

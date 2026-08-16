@@ -275,7 +275,7 @@ func handleUpload(stream *smux.Stream, destPath string) error {
 // For a single file, the archive contains one entry with the file's base name.
 // For a directory, the archive contains the directory and all its contents,
 // preserving the top-level directory name.
-// Symlinks pointing outside basePath are silently skipped.
+// Symlinks are silently skipped.
 func archivePath(tarWriter *tar.Writer, basePath string) error {
 	basePath = filepath.Clean(basePath)
 
@@ -294,8 +294,6 @@ func archivePath(tarWriter *tar.Writer, basePath string) error {
 		relPath = filepath.ToSlash(relPath)
 
 		switch {
-		case info.Mode()&os.ModeSymlink != 0:
-			return archiveSymlink(tarWriter, basePath, path, relPath)
 		case info.IsDir():
 			return archiveDir(tarWriter, relPath, info)
 		case info.Mode().IsRegular():
@@ -345,39 +343,8 @@ func archiveFile(tarWriter *tar.Writer, absPath, relPath string, info os.FileInf
 	return nil
 }
 
-func archiveSymlink(tarWriter *tar.Writer, basePath, absPath, relPath string) error {
-	linkTarget, err := os.Readlink(absPath)
-	if err != nil {
-		return fmt.Errorf("error reading symlink %s: %w", absPath, err)
-	}
-
-	// Validate the symlink target stays within the base path.
-	if err = validateSymlink(basePath, linkTarget, absPath); err != nil {
-		// Skip symlinks that escape the base directory.
-		return nil
-	}
-
-	// Convert absolute targets to relative paths for archive portability.
-	if filepath.IsAbs(linkTarget) {
-		linkTarget, err = filepath.Rel(filepath.Dir(absPath), linkTarget)
-		if err != nil {
-			// Skip if we can't compute a relative path.
-			return nil
-		}
-	}
-
-	header := &tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     relPath,
-		Linkname: filepath.ToSlash(linkTarget),
-	}
-
-	return tarWriter.WriteHeader(header)
-}
-
 // extractTar reads a tar archive and extracts its contents to destPath.
 // All paths are validated to prevent directory traversal attacks.
-// Symlinks with targets outside destPath are rejected.
 //
 // For directories: creates destPath if needed and extracts contents.
 // For single files: destPath can be an existing directory (extract file there),
@@ -459,11 +426,6 @@ func extractTarEntries(tarReader *tar.Reader, destPath, stripPrefix string) erro
 				return err
 			}
 
-		case tar.TypeSymlink:
-			if err = extractSymlink(destPath, targetPath, header); err != nil {
-				return err
-			}
-
 		default:
 			// Skip unsupported entry types.
 			continue
@@ -476,7 +438,7 @@ func extractFile(tarReader *tar.Reader, targetPath string, header *tar.Header) e
 		return err
 	}
 
-	// Always remove existing file/symlink at target path before creating new file to prevent abuse of hard links in the archive.
+	// Always remove existing file at target path before creating new file to prevent abuse of hard links in the archive.
 	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("error removing existing entry %s: %w", targetPath, err)
 	}
@@ -491,21 +453,6 @@ func extractFile(tarReader *tar.Reader, targetPath string, header *tar.Header) e
 
 	if _, err = io.Copy(f, io.LimitReader(tarReader, header.Size)); err != nil {
 		return fmt.Errorf("error extracting file %s: %w", targetPath, err)
-	}
-
-	return nil
-}
-
-func extractSymlink(destPath, targetPath string, header *tar.Header) error {
-	if err := validateSymlink(destPath, header.Linkname, targetPath); err != nil {
-		return err
-	}
-
-	// Remove existing file/symlink at target path before creating new symlink.
-	_ = os.Remove(targetPath)
-
-	if err := os.Symlink(header.Linkname, targetPath); err != nil {
-		return fmt.Errorf("error creating symlink %s: %w", targetPath, err)
 	}
 
 	return nil
@@ -532,26 +479,4 @@ func validatePath(basePath, entryName string) (string, error) {
 	}
 
 	return cleanPath, nil
-}
-
-// validateSymlink checks that a symlink target resolves to a path
-// within the base directory.
-func validateSymlink(basePath, linkTarget, linkPath string) error {
-	cleanBase := filepath.Clean(basePath)
-
-	var resolved string
-
-	linkDir := filepath.Dir(linkPath)
-
-	if filepath.IsAbs(linkTarget) {
-		resolved = filepath.Clean(linkTarget)
-	} else {
-		resolved = filepath.Clean(filepath.Join(linkDir, linkTarget))
-	}
-
-	if resolved == cleanBase || strings.HasPrefix(resolved, cleanBase+string(filepath.Separator)) {
-		return nil
-	}
-
-	return fmt.Errorf("symlink %s target %s escapes base directory %s", linkPath, linkTarget, basePath)
 }

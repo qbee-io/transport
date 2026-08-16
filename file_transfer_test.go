@@ -642,13 +642,13 @@ func TestFileTransfer_SymlinkWithinDirectory(t *testing.T) {
 	}
 
 	// Verify the symlink was preserved.
-	linkTarget, err := os.Readlink(filepath.Join(clientDir, "project", "link.go"))
-	if err != nil {
-		t.Fatalf("symlink not found in downloaded directory: %v", err)
+	_, err := os.Readlink(filepath.Join(clientDir, "project", "link.go"))
+	if err == nil {
+		t.Fatalf("symlink found in downloaded directory: %v", err)
 	}
 
-	if linkTarget == "" {
-		t.Fatal("symlink target is empty")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected error for symlink: %v", err)
 	}
 }
 
@@ -839,55 +839,6 @@ func TestFileTransfer_DownloadMultistreamDeadlock(t *testing.T) {
 	}
 	if !bytes.Equal(got, []byte("hello")) {
 		t.Fatalf("content mismatch: got %q", got)
-	}
-}
-
-func TestValidateSymlink(t *testing.T) {
-	base := "/tmp/extract"
-
-	tests := []struct {
-		name       string
-		linkTarget string
-		linkPath   string
-		wantErr    bool
-	}{
-		{
-			name:       "relative link within base",
-			linkTarget: "other.txt",
-			linkPath:   "/tmp/extract/dir/link.txt",
-			wantErr:    false,
-		},
-		{
-			name:       "relative link escaping base",
-			linkTarget: "../../etc/passwd",
-			linkPath:   "/tmp/extract/dir/link.txt",
-			wantErr:    true,
-		},
-		{
-			name:       "absolute link within base",
-			linkTarget: "/tmp/extract/other.txt",
-			linkPath:   "/tmp/extract/link.txt",
-			wantErr:    false,
-		},
-		{
-			name:       "absolute link escaping base",
-			linkTarget: "/etc/passwd",
-			linkPath:   "/tmp/extract/link.txt",
-			wantErr:    true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateSymlink(base, tt.linkTarget, tt.linkPath)
-			if tt.wantErr && err == nil {
-				t.Errorf("expected error for link %q -> %q", tt.linkPath, tt.linkTarget)
-			}
-
-			if !tt.wantErr && err != nil {
-				t.Errorf("unexpected error for link %q -> %q: %v", tt.linkPath, tt.linkTarget, err)
-			}
-		})
 	}
 }
 

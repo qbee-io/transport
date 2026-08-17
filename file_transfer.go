@@ -496,7 +496,7 @@ func mkdirAllRooted(root *os.Root, relPath string, mode os.FileMode) error {
 	}
 
 	var current string
-	for _, part := range filepath.SplitList(relPath) {
+	for part := range strings.SplitSeq(relPath, string(filepath.Separator)) {
 		if part == "" {
 			continue
 		}

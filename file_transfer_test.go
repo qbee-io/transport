@@ -25,8 +25,11 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"syscall"
 	"testing"
 	"time"
 
@@ -641,14 +644,14 @@ func TestFileTransfer_SymlinkWithinDirectory(t *testing.T) {
 		t.Fatalf("DownloadFile failed: %v", err)
 	}
 
-	// Verify the symlink was preserved.
-	linkTarget, err := os.Readlink(filepath.Join(clientDir, "project", "link.go"))
-	if err != nil {
-		t.Fatalf("symlink not found in downloaded directory: %v", err)
+	// Verify the symlink was not preserved.
+	_, err := os.Readlink(filepath.Join(clientDir, "project", "link.go"))
+	if err == nil {
+		t.Fatalf("symlink found in downloaded directory: %v", err)
 	}
 
-	if linkTarget == "" {
-		t.Fatal("symlink target is empty")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected error for symlink: %v", err)
 	}
 }
 
@@ -686,6 +689,215 @@ func TestFileTransfer_SymlinkEscapingSkipped(t *testing.T) {
 	// The escaping symlink should be skipped.
 	if _, err := os.Lstat(filepath.Join(clientDir, "project", "escape.txt")); err == nil {
 		t.Fatal("escaping symlink should have been skipped")
+	}
+}
+
+func TestArchivePath_OnlyRegularFilesAndDirectoriesAreArchived(t *testing.T) {
+	tmpDir := t.TempDir()
+	baseDir := filepath.Join(tmpDir, "tree")
+
+	if err := os.MkdirAll(filepath.Join(baseDir, "sub"), 0755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(baseDir, "root.txt"), []byte("root"), 0644); err != nil {
+		t.Fatalf("failed to create root file: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(baseDir, "sub", "nested.txt"), []byte("nested"), 0644); err != nil {
+		t.Fatalf("failed to create nested file: %v", err)
+	}
+
+	// Symlink should be skipped by archivePath.
+	if err := os.Symlink(filepath.Join(baseDir, "root.txt"), filepath.Join(baseDir, "link.txt")); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	// FIFO is a special file type and should be skipped by archivePath.
+	fifoPath := filepath.Join(baseDir, "pipe.fifo")
+	if err := syscall.Mkfifo(fifoPath, 0644); err != nil {
+		t.Fatalf("failed to create fifo: %v", err)
+	}
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := archivePath(tw, baseDir); err != nil {
+		t.Fatalf("archivePath failed: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("closing tar writer failed: %v", err)
+	}
+
+	tr := tar.NewReader(bytes.NewReader(buf.Bytes()))
+	var entryNames []string
+	var entryTypes []byte
+
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		if err != nil {
+			t.Fatalf("error reading tar: %v", err)
+		}
+
+		entryNames = append(entryNames, hdr.Name)
+		entryTypes = append(entryTypes, hdr.Typeflag)
+	}
+
+	wantNames := []string{"tree/", "tree/root.txt", "tree/sub/", "tree/sub/nested.txt"}
+	for _, want := range wantNames {
+		if !slices.Contains(entryNames, want) {
+			t.Fatalf("expected tar entry %q, got entries: %v", want, entryNames)
+		}
+	}
+
+	if slices.Contains(entryNames, "tree/link.txt") {
+		t.Fatalf("symlink entry must not be archived, entries: %v", entryNames)
+	}
+
+	if slices.Contains(entryNames, "tree/pipe.fifo") {
+		t.Fatalf("special file entry must not be archived, entries: %v", entryNames)
+	}
+
+	for _, typeFlag := range entryTypes {
+		if typeFlag != tar.TypeDir && typeFlag != tar.TypeReg {
+			t.Fatalf("unexpected tar entry type %d found, only dir/file should be archived", typeFlag)
+		}
+	}
+}
+
+func TestArchivePath_SymlinkBasePathProducesNoEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	target := filepath.Join(tmpDir, "target.txt")
+	if err := os.WriteFile(target, []byte("content"), 0644); err != nil {
+		t.Fatalf("failed to create target file: %v", err)
+	}
+
+	link := filepath.Join(tmpDir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := archivePath(tw, link); err != nil {
+		t.Fatalf("archivePath failed: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("closing tar writer failed: %v", err)
+	}
+
+	tr := tar.NewReader(bytes.NewReader(buf.Bytes()))
+	if _, err := tr.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected no tar entries for symlink base path, got err: %v", err)
+	}
+}
+
+func TestExtractTar_OnlyDirectoryAndRegularFileEntriesAreMaterialized(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	writeHeader := func(hdr *tar.Header, body []byte) {
+		t.Helper()
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("failed to write tar header %q: %v", hdr.Name, err)
+		}
+
+		if len(body) > 0 {
+			if _, err := tw.Write(body); err != nil {
+				t.Fatalf("failed to write tar body for %q: %v", hdr.Name, err)
+			}
+		}
+	}
+
+	writeHeader(&tar.Header{Name: "safe/", Typeflag: tar.TypeDir, Mode: 0755}, nil)
+	writeHeader(&tar.Header{Name: "safe/file.txt", Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len("ok"))}, []byte("ok"))
+
+	// The following entry types must never be materialized by extractTar.
+	writeHeader(&tar.Header{Name: "safe/link", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd", Mode: 0777}, nil)
+	writeHeader(&tar.Header{Name: "safe/hard", Typeflag: tar.TypeLink, Linkname: "safe/file.txt", Mode: 0644}, nil)
+	writeHeader(&tar.Header{Name: "safe/fifo", Typeflag: tar.TypeFifo, Mode: 0644}, nil)
+	writeHeader(&tar.Header{Name: "safe/chardev", Typeflag: tar.TypeChar, Mode: 0600, Devmajor: 1, Devminor: 3}, nil)
+	writeHeader(&tar.Header{Name: "safe/blockdev", Typeflag: tar.TypeBlock, Mode: 0600, Devmajor: 8, Devminor: 0}, nil)
+
+	if err := tw.Close(); err != nil {
+		t.Fatalf("failed to close tar writer: %v", err)
+	}
+
+	destDir := t.TempDir()
+	tr := tar.NewReader(bytes.NewReader(buf.Bytes()))
+	if err := extractTar(tr, destDir); err != nil {
+		t.Fatalf("extractTar failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(destDir, "safe")); err != nil {
+		t.Fatalf("expected directory to be extracted: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(destDir, "safe", "file.txt"))
+	if err != nil {
+		t.Fatalf("expected regular file to be extracted: %v", err)
+	}
+
+	if !bytes.Equal(got, []byte("ok")) {
+		t.Fatalf("regular file content mismatch: got %q", got)
+	}
+
+	notExpected := []string{
+		"safe/link",
+		"safe/hard",
+		"safe/fifo",
+		"safe/chardev",
+		"safe/blockdev",
+	}
+
+	for _, rel := range notExpected {
+		if _, err := os.Lstat(filepath.Join(destDir, rel)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unexpected extracted special entry %q (err=%v)", rel, err)
+		}
+	}
+}
+
+func TestExtractTar_UnsupportedFirstEntryDoesNotCreateDestination(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "top-link",
+		Typeflag: tar.TypeSymlink,
+		Linkname: "/etc/passwd",
+		Mode:     0777,
+	}); err != nil {
+		t.Fatalf("failed to write symlink header: %v", err)
+	}
+
+	if err := tw.Close(); err != nil {
+		t.Fatalf("failed to close tar writer: %v", err)
+	}
+
+	root := t.TempDir()
+	destPath := filepath.Join(root, "new-destination")
+
+	tr := tar.NewReader(bytes.NewReader(buf.Bytes()))
+	err := extractTar(tr, destPath)
+	if err == nil {
+		t.Fatal("expected error for unsupported first tar entry type, got nil")
+	}
+
+	var fileErr ErrFileTransfer
+	if !errors.As(err, &fileErr) {
+		t.Fatalf("expected ErrFileTransfer, got %T: %v", err, err)
+	}
+
+	if fileErr.Message != "Transfer of this file type is not supported" {
+		t.Fatalf("unexpected error message: %q", fileErr.Message)
+	}
+
+	if _, statErr := os.Stat(destPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination path should not be created on unsupported first entry, stat err: %v", statErr)
 	}
 }
 
@@ -839,283 +1051,5 @@ func TestFileTransfer_DownloadMultistreamDeadlock(t *testing.T) {
 	}
 	if !bytes.Equal(got, []byte("hello")) {
 		t.Fatalf("content mismatch: got %q", got)
-	}
-}
-
-func TestValidateSymlink(t *testing.T) {
-	base := "/tmp/extract"
-
-	tests := []struct {
-		name       string
-		linkTarget string
-		linkPath   string
-		wantErr    bool
-	}{
-		{
-			name:       "relative link within base",
-			linkTarget: "other.txt",
-			linkPath:   "/tmp/extract/dir/link.txt",
-			wantErr:    false,
-		},
-		{
-			name:       "relative link escaping base",
-			linkTarget: "../../etc/passwd",
-			linkPath:   "/tmp/extract/dir/link.txt",
-			wantErr:    true,
-		},
-		{
-			name:       "absolute link within base",
-			linkTarget: "/tmp/extract/other.txt",
-			linkPath:   "/tmp/extract/link.txt",
-			wantErr:    false,
-		},
-		{
-			name:       "absolute link escaping base",
-			linkTarget: "/etc/passwd",
-			linkPath:   "/tmp/extract/link.txt",
-			wantErr:    true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateSymlink(base, tt.linkTarget, tt.linkPath)
-			if tt.wantErr && err == nil {
-				t.Errorf("expected error for link %q -> %q", tt.linkPath, tt.linkTarget)
-			}
-
-			if !tt.wantErr && err != nil {
-				t.Errorf("unexpected error for link %q -> %q: %v", tt.linkPath, tt.linkTarget, err)
-			}
-		})
-	}
-}
-
-// TestExtractTar_SymlinkTraversalEscape reproduces a path-traversal vulnerability
-// in extractTar: validateSymlink and validatePath are purely lexical, but
-// extractFile opens regular files with O_CREATE|O_WRONLY|O_TRUNC and no
-// O_NOFOLLOW. A crafted tar containing
-//
-//  1. a self-referential symlink   "d"    -> "."
-//  2. a traversing symlink         "evil" -> "d/../pwn"
-//  3. a regular file               "evil" with attacker-controlled contents
-//
-// passes every lexical check (filepath.Clean strips "d/.." textually so the
-// resolved target appears to be inside destPath), but on disk the kernel
-// follows the planted "d" symlink in step 3 and the truncate/write lands in
-// the *parent* directory of destPath.
-func TestExtractTar_SymlinkTraversalEscape(t *testing.T) {
-	// Use a dedicated parent so we can detect a file written one level above
-	// the extraction destination. t.TempDir() cleans this whole tree up.
-	parent := t.TempDir()
-	destPath := filepath.Join(parent, "dest")
-	if err := os.Mkdir(destPath, 0o755); err != nil {
-		t.Fatalf("failed to create destPath: %v", err)
-	}
-
-	// Sentinel that must NOT be overwritten. It lives in the parent dir,
-	// i.e. one level above destPath – the exact location the attack aims for.
-	sentinelPath := filepath.Join(parent, "pwn")
-	const originalContent = "original-untouched"
-	if err := os.WriteFile(sentinelPath, []byte(originalContent), 0o600); err != nil {
-		t.Fatalf("failed to seed sentinel file: %v", err)
-	}
-
-	// Build the malicious tar in memory.
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-
-	// 1. d -> "."  (self-reference; lexically resolves to destPath, allowed)
-	if err := tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     "d",
-		Linkname: ".",
-		Mode:     0o777,
-	}); err != nil {
-		t.Fatalf("write header d: %v", err)
-	}
-
-	// 2. evil -> "d/../pwn"
-	//    validateSymlink computes Clean(destPath + "/" + "d/../pwn") = destPath/pwn,
-	//    which lexically lives inside destPath, so the check passes.
-	if err := tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     "evil",
-		Linkname: "d/../pwn",
-		Mode:     0o777,
-	}); err != nil {
-		t.Fatalf("write header evil symlink: %v", err)
-	}
-
-	// 3. Regular file "evil". validatePath returns destPath/evil (allowed),
-	//    extractFile then OpenFile's it without O_NOFOLLOW, follows the planted
-	//    symlink, and the kernel resolves d/../pwn outside destPath.
-	pwned := []byte("PWNED-by-traversal")
-	if err := tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeReg,
-		Name:     "evil",
-		Mode:     0o644,
-		Size:     int64(len(pwned)),
-	}); err != nil {
-		t.Fatalf("write header evil regular: %v", err)
-	}
-	if _, err := tw.Write(pwned); err != nil {
-		t.Fatalf("write evil body: %v", err)
-	}
-
-	if err := tw.Close(); err != nil {
-		t.Fatalf("close tar: %v", err)
-	}
-
-	// Drive the actual library entry point used on the device side.
-	tr := tar.NewReader(&buf)
-	if err := extractTar(tr, destPath); err != nil {
-		// An error here would actually be the *secure* outcome – the library
-		// should refuse the archive. We tolerate it and let the post-conditions
-		// below decide whether the attack succeeded.
-		t.Logf("extractTar returned error (acceptable if no escape occurred): %v", err)
-	}
-
-	// --- Post-conditions: the attack must NOT have escaped destPath. ---
-
-	// The sentinel file in the parent directory must still hold its original
-	// contents. If it now contains the attacker payload, the kernel followed
-	// the planted symlink and the write landed outside destPath.
-	got, err := os.ReadFile(sentinelPath)
-	if err != nil {
-		t.Fatalf("sentinel file unexpectedly missing: %v", err)
-	}
-	if string(got) != originalContent {
-		t.Fatalf(
-			"path traversal: file at %s (parent of destPath) was overwritten;\n"+
-				"  want %q\n  got  %q",
-			sentinelPath, originalContent, string(got),
-		)
-	}
-
-	// Nothing should ever have been created outside destPath as a side effect.
-	entries, err := os.ReadDir(parent)
-	if err != nil {
-		t.Fatalf("read parent dir: %v", err)
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if name == "dest" || name == "pwn" {
-			continue
-		}
-		t.Errorf("unexpected entry created outside destPath: %s", name)
-	}
-}
-
-// TestExtractTar_IntermediateSymlinkTraversalEscape reproduces the incomplete-fix
-// bypass of GHSA-f9m7-vc86-p6jj / CVE-2026-55828. The v1.26.25 patch blocks the
-// final-symlink overwrite variant (covered by TestExtractTar_SymlinkTraversalEscape),
-// but validatePath/validateSymlink are still purely lexical while os.MkdirAll and
-// os.OpenFile follow symlink path *components* during real resolution.
-//
-// A crafted tar uses an intermediate symlink directory component:
-//
-//	d    -> .            (self-reference; lexically resolves to dest, allowed)
-//	evil -> d/..         (lexically Clean(dest/d/..) == dest, allowed)
-//	evil/outside-dir/    (MkdirAll follows evil -> ../outside-dir = parent of dest)
-//	evil/outside-dir/payload.txt (written outside dest)
-//
-// Chaining d before .. escapes multiple levels: "d/d/../.." escapes two levels.
-func TestExtractTar_IntermediateSymlinkTraversalEscape(t *testing.T) {
-	testCases := []struct {
-		name           string
-		linkTarget     string
-		escapedBaseDir func(root, parent string) string
-	}{
-		{
-			name:       "one parent level",
-			linkTarget: "d/..",
-			escapedBaseDir: func(root, parent string) string {
-				return parent
-			},
-		},
-		{
-			name:       "two parent levels",
-			linkTarget: "d/d/../..",
-			escapedBaseDir: func(root, parent string) string {
-				return root
-			},
-		},
-	}
-
-	for _, tt := range testCases {
-		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			parent := filepath.Join(root, "parent")
-			destPath := filepath.Join(parent, "dest")
-			if err := os.MkdirAll(destPath, 0o755); err != nil {
-				t.Fatalf("failed to create destPath: %v", err)
-			}
-
-			escapedPayloadPath := filepath.Join(tt.escapedBaseDir(root, parent), "outside-dir", "payload.txt")
-			payload := []byte("PWNED-intermediate-symlink")
-
-			var buf bytes.Buffer
-			tw := tar.NewWriter(&buf)
-
-			if err := tw.WriteHeader(&tar.Header{
-				Typeflag: tar.TypeSymlink,
-				Name:     "d",
-				Linkname: ".",
-				Mode:     0o777,
-			}); err != nil {
-				t.Fatalf("write header d: %v", err)
-			}
-
-			if err := tw.WriteHeader(&tar.Header{
-				Typeflag: tar.TypeSymlink,
-				Name:     "evil",
-				Linkname: tt.linkTarget,
-				Mode:     0o777,
-			}); err != nil {
-				t.Fatalf("write header evil symlink: %v", err)
-			}
-
-			if err := tw.WriteHeader(&tar.Header{
-				Typeflag: tar.TypeDir,
-				Name:     "evil/outside-dir/",
-				Mode:     0o755,
-			}); err != nil {
-				t.Fatalf("write header outside-dir: %v", err)
-			}
-
-			if err := tw.WriteHeader(&tar.Header{
-				Typeflag: tar.TypeReg,
-				Name:     "evil/outside-dir/payload.txt",
-				Mode:     0o644,
-				Size:     int64(len(payload)),
-			}); err != nil {
-				t.Fatalf("write header payload: %v", err)
-			}
-			if _, err := tw.Write(payload); err != nil {
-				t.Fatalf("write payload body: %v", err)
-			}
-
-			if err := tw.Close(); err != nil {
-				t.Fatalf("close tar: %v", err)
-			}
-
-			err := extractTar(tar.NewReader(&buf), destPath)
-			if err == nil {
-				t.Errorf("expected extractTar to reject intermediate symlink traversal archive")
-			}
-
-			got, readErr := os.ReadFile(escapedPayloadPath)
-			if readErr == nil {
-				t.Fatalf(
-					"path traversal: payload was written outside destPath at %s; got %q",
-					escapedPayloadPath,
-					string(got),
-				)
-			}
-			if !os.IsNotExist(readErr) {
-				t.Fatalf("unexpected error checking escaped payload %s: %v", escapedPayloadPath, readErr)
-			}
-		})
 	}
 }

@@ -448,8 +448,28 @@ func newDeviceUDPListener(dstAddr *net.UDPAddr, suggestedPort string) (*net.UDPC
 	return udpListener, nil
 }
 
+// isExpectedUDPSource returns true when srcAddr matches the configured destination host.
+// We intentionally only validate the host address, as response ports may differ for protocols
+// that negotiate data channels dynamically (e.g. TFTP-style flows).
+func isExpectedUDPSource(srcAddr, dstAddr *net.UDPAddr) bool {
+	if srcAddr == nil || dstAddr == nil {
+		return false
+	}
+
+	if !srcAddr.IP.Equal(dstAddr.IP) {
+		return false
+	}
+
+	// Preserve scope safety for link-local IPv6 traffic.
+	if dstAddr.Zone != "" && srcAddr.Zone != dstAddr.Zone {
+		return false
+	}
+
+	return true
+}
+
 // handleUDPTunnelTx forwards UDP packets from the local listener to the client stream inside the tunnel.
-func handleUDPTunnelTx(ctx context.Context, localListener *net.UDPConn, stream *smux.Stream) {
+func handleUDPTunnelTx(ctx context.Context, localListener *net.UDPConn, stream *smux.Stream, dstAddr *net.UDPAddr) {
 	var err error
 	var dataLength int
 	var srcAddr *net.UDPAddr
@@ -478,6 +498,11 @@ func handleUDPTunnelTx(ctx context.Context, localListener *net.UDPConn, stream *
 
 			log.Printf("[device:listener] error reading UDP data: %v", err)
 			return
+		}
+
+		if !isExpectedUDPSource(srcAddr, dstAddr) {
+			log.Printf("[device:listener] dropping packet from unexpected source %s, expected host %s", srcAddr.String(), dstAddr.String())
+			continue
 		}
 
 		binary.BigEndian.PutUint16(headerBuf, uint16(srcAddr.Port))
@@ -560,7 +585,7 @@ func HandleUDPTunnel(ctx context.Context, stream *smux.Stream, payload []byte) e
 		return err
 	}
 
-	go handleUDPTunnelTx(ctx, udpListener, stream)
+	go handleUDPTunnelTx(ctx, udpListener, stream, dstAddr)
 
 	return handleUDPTunnelRx(ctx, stream, udpListener, dstAddr)
 }

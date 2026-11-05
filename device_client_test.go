@@ -26,11 +26,16 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/xtaci/smux"
 )
 
 func TestDeviceClient_Callbacks(t *testing.T) {
 	var failing atomic.Bool
 	failing.Store(true)
+
+	done := make(chan struct{})
+	sessions := make(chan *smux.Session, 10)
 
 	edge := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if failing.Load() {
@@ -42,9 +47,17 @@ func TestDeviceClient_Callbacks(t *testing.T) {
 		if err != nil {
 			return
 		}
-		<-session.CloseChan()
+		defer func() { _ = session.Close() }()
+
+		sessions <- session
+
+		select {
+		case <-session.CloseChan():
+		case <-done:
+		}
 	}))
 	t.Cleanup(edge.Close)
+	t.Cleanup(func() { close(done) })
 
 	caCertPool := x509.NewCertPool()
 	caCertPool.AddCert(edge.Certificate())
@@ -88,4 +101,29 @@ func TestDeviceClient_Callbacks(t *testing.T) {
 	}
 
 	deviceClient.Ready()
+
+	// close the server-side session to simulate connection loss
+	select {
+	case session := <-sessions:
+		_ = session.Close()
+	case <-time.After(5 * time.Second):
+		t.Fatalf("server-side session not established")
+	}
+
+	select {
+	case err = <-errCh:
+		if err == nil {
+			t.Fatalf("expected non-nil error on connection loss")
+		}
+	case <-connectCh:
+		t.Fatalf("unexpected connect before error")
+	case <-time.After(5 * time.Second):
+		t.Fatalf("error handler not called on connection loss")
+	}
+
+	select {
+	case <-connectCh:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("connect handler not called on reconnect")
+	}
 }

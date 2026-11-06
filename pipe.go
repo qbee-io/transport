@@ -41,8 +41,10 @@ func Pipe(src io.ReadWriteCloser, dst io.ReadWriteCloser) (sent int64, received 
 	_ = src.Close()
 	_ = dst.Close()
 
-	if secondErr := <-errCh; err == nil {
-		err = secondErr
+	if err == nil {
+		err = <-errCh
+	} else {
+		_ = <-errCh
 	}
 
 	// Ignore closed pipe and EOF errors.

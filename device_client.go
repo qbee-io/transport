@@ -54,6 +54,8 @@ func NewDeviceClient(endpoint string, tlsConfig *tls.Config) (*DeviceClient, err
 		smuxConfig: DefaultSmuxConfig,
 		handlers:   make(map[MessageType]Handler),
 		goAwayCh:   make(chan bool, 1),
+		onConnect:  func() {},
+		onError:    func(err error) {},
 	}
 
 	return cli, nil
@@ -71,11 +73,31 @@ type DeviceClient struct {
 	handlers   map[MessageType]Handler
 	goAwayCh   chan bool
 	streamWg   sync.WaitGroup
+
+	// onConnect is called every time the connection to the edge service is established.
+	onConnect func()
+
+	// onError is called every time the connection to the edge service fails or is lost.
+	onError func(err error)
 }
 
 // WithHandler sets the handler for the given message type.
 func (cli *DeviceClient) WithHandler(messageType MessageType, handler Handler) *DeviceClient {
 	cli.handlers[messageType] = handler
+	return cli
+}
+
+// WithConnectHandler sets a callback, which is called every time the connection to the edge service is established.
+// The callback is called synchronously from the connection loop, so it must not block.
+func (cli *DeviceClient) WithConnectHandler(handler func()) *DeviceClient {
+	cli.onConnect = handler
+	return cli
+}
+
+// WithErrorHandler sets a callback, which is called every time the connection to the edge service fails or is lost.
+// The callback is called synchronously from the connection loop, so it must not block.
+func (cli *DeviceClient) WithErrorHandler(handler func(err error)) *DeviceClient {
+	cli.onError = handler
 	return cli
 }
 
@@ -91,6 +113,8 @@ func (cli *DeviceClient) startOnce(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = smuxSession.Close() }()
+
+	cli.onConnect()
 
 	// mark client as ready and defer the removal of the ready marker
 	cli.ready.Done()
@@ -144,8 +168,15 @@ func (cli *DeviceClient) Start(ctx context.Context) {
 				return
 			default:
 				if err := cli.startOnce(ctx); err != nil {
+					// stop without logging or reconnecting when the client is shutting down
+					if ctx.Err() != nil {
+						return
+					}
+
 					reconnectIn := minReconnectDelay + rand.Int63n(maxReconnectDelay-minReconnectDelay)
 					log.Printf("device client error: %v - reconnecting in %d seconds", err, reconnectIn)
+					// run connection error callback
+					cli.onError(err)
 					time.Sleep(time.Duration(reconnectIn) * time.Second)
 				}
 			}

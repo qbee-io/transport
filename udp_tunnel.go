@@ -183,7 +183,7 @@ func (s *UDPStream) getOrCreateListener(remoteSrcPort uint16) (*net.UDPConn, err
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("error creating secondary listener for %s: %v", listenerAddr.String(), err)
+		return nil, fmt.Errorf("error creating secondary listener for %s: %w", listenerAddr.String(), err)
 	}
 
 	go s.processSecondaryListener(remoteSrcPort, listener)
@@ -366,7 +366,7 @@ func (t *UDPTunnel) getOrCreateStream(cliAddr *net.UDPAddr, listener *net.UDPCon
 
 	stream, err := t.cli.OpenStream(t.ctx, MessageTypeUDPTunnel, []byte(payload))
 	if err != nil {
-		return nil, fmt.Errorf("error opening stream: %v", err)
+		return nil, fmt.Errorf("error opening stream: %w", err)
 	}
 
 	udpStream := &UDPStream{

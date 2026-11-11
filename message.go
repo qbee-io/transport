@@ -79,11 +79,11 @@ func WriteMessage(w io.Writer, messageType MessageType, payload []byte) error {
 	binary.BigEndian.PutUint16(header[1:], uint16(len(payload)))
 
 	if _, err := w.Write(header); err != nil {
-		return fmt.Errorf("error writing message header: %v", err)
+		return fmt.Errorf("error writing message header: %w", err)
 	}
 
 	if _, err := w.Write(payload); err != nil {
-		return fmt.Errorf("error writing message payload: %v", err)
+		return fmt.Errorf("error writing message payload: %w", err)
 	}
 
 	return nil
@@ -93,7 +93,7 @@ func WriteMessage(w io.Writer, messageType MessageType, payload []byte) error {
 func ReadMessage(r io.Reader) (messageType MessageType, payload []byte, err error) {
 	header := make([]byte, 3)
 	if _, err = io.ReadFull(r, header); err != nil {
-		return 0, nil, fmt.Errorf("error reading message header: %v", err)
+		return 0, nil, fmt.Errorf("error reading message header: %w", err)
 	}
 
 	messageType = MessageType(header[0])
@@ -101,7 +101,7 @@ func ReadMessage(r io.Reader) (messageType MessageType, payload []byte, err erro
 
 	payload = make([]byte, payloadLength)
 	if _, err = io.ReadFull(r, payload); err != nil {
-		return 0, nil, fmt.Errorf("error reading message payload: %v", err)
+		return 0, nil, fmt.Errorf("error reading message payload: %w", err)
 	}
 
 	return messageType, payload, nil
@@ -123,7 +123,7 @@ func WriteOK(w io.Writer, payload []byte) error {
 func ExpectOK(r io.Reader) ([]byte, error) {
 	msgType, payload, err := ReadMessage(r)
 	if err != nil {
-		return nil, fmt.Errorf("error reading message: %v", err)
+		return nil, fmt.Errorf("error reading message: %w", err)
 	}
 
 	if msgType == MessageTypeError {

@@ -74,7 +74,7 @@ func (cli *Client) OpenStreamPayload(ctx context.Context, msgType MessageType, p
 
 	stream, err := cli.smuxSession.OpenStream()
 	if err != nil {
-		return nil, nil, fmt.Errorf("error opening stream: %v", err)
+		return nil, nil, fmt.Errorf("error opening stream: %w", err)
 	}
 
 	if err = WriteMessage(stream, msgType, payload); err != nil {
@@ -146,22 +146,22 @@ func (cli *Client) OpenTCPTunnel(ctx context.Context, localHostPort, remoteHostP
 func (cli *Client) OpenUDPTunnel(ctx context.Context, localHostPort, remoteHostPort string) (*UDPTunnel, error) {
 	_, port, err := net.SplitHostPort(remoteHostPort)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing remote host port: %v", err)
+		return nil, fmt.Errorf("error parsing remote host port: %w", err)
 	}
 
 	var dstPort uint64
 	if dstPort, err = strconv.ParseUint(port, 10, 16); err != nil {
-		return nil, fmt.Errorf("error parsing remote port: %v", err)
+		return nil, fmt.Errorf("error parsing remote port: %w", err)
 	}
 
 	var udpLocalAddr *net.UDPAddr
 	if udpLocalAddr, err = net.ResolveUDPAddr("udp", localHostPort); err != nil {
-		return nil, fmt.Errorf("error resolving local UDP address: %v", err)
+		return nil, fmt.Errorf("error resolving local UDP address: %w", err)
 	}
 
 	var localListener *net.UDPConn
 	if localListener, err = net.ListenUDP("udp", udpLocalAddr); err != nil {
-		return nil, fmt.Errorf("error creating local listener for %s: %v", udpLocalAddr, err)
+		return nil, fmt.Errorf("error creating local listener for %s: %w", udpLocalAddr, err)
 	}
 
 	udpTunnel := &UDPTunnel{
